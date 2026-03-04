@@ -19,8 +19,9 @@
     "dist"
   ],
   "scripts": {
-    "build": "npm run typecheck",
+    "build": "npm run typecheck && npm run bundle:mcp-server",
     "typecheck": "tsc",
+    "bundle:mcp-server": "esbuild src/mcp-server.ts --bundle --platform=node --format=esm --target=node20 --outfile=dist/mcp-server.bundled.js --banner:js=\"import { createRequire } from 'module';const require = createRequire(import.meta.url);\"",
     "prepare": "npm run build",
     "prepublishOnly": "npm run build"
   },
@@ -30,6 +31,7 @@
   },
   "devDependencies": {
     "@types/node": "^20.0.0",
+    "esbuild": "^0.25.10",
     "typescript": "^5.0.0"
   },
   "engines": {
