@@ -7,16 +7,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"net/url"
 	"os"
-	"os/exec"
 	"os/signal"
-	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
 
-	"github.com/github/copilot-engine-sdk/cli/internal/events"
 	"github.com/github/copilot-engine-sdk/cli/internal/runner"
 	"github.com/github/copilot-engine-sdk/cli/internal/server"
 	"github.com/github/copilot-engine-sdk/cli/internal/store"
@@ -31,6 +27,7 @@ var (
 	workingDir               string
 	timeout                  time.Duration
 	verbose                  bool
+	engineLogs               bool
 	action                   string
 	commitLogin              string
 	commitEmail              string
@@ -85,6 +82,7 @@ func init() {
 	runCmd.Flags().StringVarP(&workingDir, "working-dir", "w", "", "Working directory for the engine command (not the repo)")
 	runCmd.Flags().DurationVarP(&timeout, "timeout", "t", 5*time.Minute, "Timeout for engine execution")
 	runCmd.Flags().BoolVarP(&verbose, "verbose", "v", false, "Enable verbose output")
+	runCmd.Flags().BoolVar(&engineLogs, "engine-logs", false, "Show raw engine stdout/stderr instead of formatted server events")
 	runCmd.Flags().StringVar(&action, "action", "fix", "Agent action type: fix, fix-pr-comment, or task")
 	runCmd.Flags().StringVar(&commitLogin, "commit-login", "engine-cli-user", "Git author name for commits")
 	runCmd.Flags().StringVar(&commitEmail, "commit-email", "engine-cli@users.noreply.github.com", "Git author email for commits")
@@ -96,21 +94,8 @@ func init() {
 func runEngine(cmd *cobra.Command, args []string) error {
 	command := args[0]
 
-	// Clone the repository to a temporary directory
 	fmt.Println("🚀 Engine Test Harness")
 	fmt.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-	fmt.Printf("📦 Cloning repository: %s\n", repoURL)
-
-	repoDir, branchName, err := cloneRepo(repoURL)
-	if err != nil {
-		return fmt.Errorf("failed to clone repository: %w", err)
-	}
-	defer func() {
-		fmt.Printf("🧹 Cleaning up temp directory: %s\n", repoDir)
-		_ = os.RemoveAll(repoDir)
-	}()
-
-	fmt.Printf("📁 Cloned to: %s\n", repoDir)
 
 	// Generate a job ID
 	jobID := fmt.Sprintf("test-job-%d", time.Now().UnixNano())
@@ -120,6 +105,41 @@ func runEngine(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("invalid repo URL: %w", err)
 	}
+
+	// All engine tokens are derived from a single GITHUB_TOKEN in the environment.
+	githubToken := os.Getenv("GITHUB_TOKEN")
+	if githubToken == "" {
+		return fmt.Errorf("GITHUB_TOKEN must be set in the environment")
+	}
+
+	// Determine owner/repo and API base URL
+	parts := strings.SplitN(repoNWO, "/", 2)
+	owner, repo := parts[0], parts[1]
+	apiBaseURL := serverURL + "/api/v3"
+	if strings.Contains(serverURL, "github.com") {
+		apiBaseURL = "https://api.github.com"
+	}
+
+	// Fetch the default branch
+	defaultBranch, err := getDefaultBranch(apiBaseURL, githubToken, owner, repo)
+	if err != nil {
+		return fmt.Errorf("failed to get default branch: %w", err)
+	}
+
+	branchName := fmt.Sprintf("engine-cli-test-%d", time.Now().UnixNano())
+
+	// Create branch with empty commit and draft PR
+	fmt.Printf("📦 Repository: %s (default branch: %s)\n", repoNWO, defaultBranch)
+	fmt.Printf("🌿 Creating branch: %s\n", branchName)
+
+	setup, err := setupBranchAndPR(apiBaseURL, githubToken, owner, repo, branchName, defaultBranch,
+		fmt.Sprintf("[engine-cli] %s", truncate(problemStatement, 60)),
+		fmt.Sprintf("**Problem:** %s\n\n_Created by engine-cli test harness._", problemStatement),
+	)
+	if err != nil {
+		return fmt.Errorf("failed to set up branch and PR: %w", err)
+	}
+	fmt.Printf("🔗 Pull request: %s\n", setup.PRURL)
 
 	// Create mock server
 	jobConfig := server.JobConfig{
@@ -134,11 +154,55 @@ func runEngine(cmd *cobra.Command, args []string) error {
 		CommitEmail:              commitEmail,
 	}
 
+	lastEventKind := ""
+	repeatCount := 0
+	prNumber := setup.PRNumber
 	callbacks := server.Callbacks{
 		OnJobFetched: func() {
 			fmt.Println("📋 Engine fetched job details")
 		},
 		OnProgressEvent: func(event server.ProgressEvent) {
+			kind := resolveKind(event.Kind, event.Content)
+
+			// Update PR on progress and summary events
+			if kind == "report_progress" || kind == "pr_summary" {
+				var ev struct {
+					PRTitle       string `json:"pr_title"`
+					PRDescription string `json:"pr_description"`
+				}
+				if json.Unmarshal(event.Content, &ev) == nil && (ev.PRTitle != "" || ev.PRDescription != "") {
+					if err := updatePullRequest(apiBaseURL, githubToken, owner, repo, prNumber, ev.PRTitle, ev.PRDescription); err != nil {
+						fmt.Printf("\n⚠️  Failed to update PR: %v\n", err)
+					}
+				}
+			}
+
+			if engineLogs {
+				return
+			}
+
+			// Collapse repeated events of the same kind into a counter
+			if kind == lastEventKind {
+				repeatCount++
+				icon := eventIcon(kind)
+				fmt.Printf("\r\033[K%s %s (%d events)", icon, kind, repeatCount)
+				return
+			}
+
+			// Finish the previous repeat line if any
+			if repeatCount > 0 {
+				fmt.Println()
+			}
+			lastEventKind = kind
+			repeatCount = 1
+
+			// Events with no meaningful details render as a compact inline counter
+			if !hasEventDetails(kind, event.Content) {
+				icon := eventIcon(kind)
+				fmt.Printf("%s %s (1 event)", icon, kind)
+				return
+			}
+
 			printProgressEvent(event)
 		},
 	}
@@ -171,12 +235,6 @@ func runEngine(cmd *cobra.Command, args []string) error {
 
 	apiURL := fmt.Sprintf("http://localhost:%d/agent", port)
 
-	// All engine tokens are derived from a single GITHUB_TOKEN in the environment.
-	githubToken := os.Getenv("GITHUB_TOKEN")
-	if githubToken == "" {
-		return fmt.Errorf("GITHUB_TOKEN must be set in the environment")
-	}
-
 	fmt.Printf("📡 Mock server running on %s\n", apiURL)
 	fmt.Printf("🆔 Job ID: %s\n", jobID)
 	fmt.Printf("📝 Problem: %s\n", truncate(problemStatement, 50))
@@ -202,10 +260,14 @@ func runEngine(cmd *cobra.Command, args []string) error {
 	// Create runner callbacks
 	runnerCallbacks := runner.Callbacks{
 		OnStdout: func(line string) {
-			fmt.Printf("│ %s\n", line)
+			if engineLogs {
+				fmt.Printf("│ %s\n", line)
+			}
 		},
 		OnStderr: func(line string) {
-			fmt.Printf("│ \033[31m%s\033[0m\n", line) // Red for stderr
+			if engineLogs {
+				fmt.Printf("│ \033[31m%s\033[0m\n", line) // Red for stderr
+			}
 		},
 	}
 
@@ -227,6 +289,11 @@ func runEngine(cmd *cobra.Command, args []string) error {
 	}
 
 	result := runner.Run(ctx, command, env, opts, runnerCallbacks)
+
+	// Finish any pending repeat counter
+	if repeatCount > 1 {
+		fmt.Println()
+	}
 
 	fmt.Println()
 	fmt.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
@@ -286,383 +353,4 @@ func runEngine(cmd *cobra.Command, args []string) error {
 	}
 
 	return nil
-}
-
-// ANSI color codes
-const (
-	colorReset   = "\033[0m"
-	colorBold    = "\033[1m"
-	colorDim     = "\033[2m"
-	colorCyan    = "\033[36m"
-	colorGreen   = "\033[32m"
-	colorYellow  = "\033[33m"
-	colorBlue    = "\033[34m"
-	colorMagenta = "\033[35m"
-	colorRed     = "\033[31m"
-	colorWhite   = "\033[37m"
-	colorGray    = "\033[90m"
-)
-
-func eventIcon(kind string) string {
-	switch kind {
-	case "message":
-		return "💬"
-	case "model_call_success":
-		return "✨"
-	case "model_call_failure":
-		return "❌"
-	case "tool_execution":
-		return "🔧"
-	case "response":
-		return "📤"
-	case "history_truncated":
-		return "✂️"
-	case "report_progress":
-		return "📝"
-	case "comment_reply":
-		return "💬"
-	case "pr_summary":
-		return "📋"
-	default:
-		return "📨"
-	}
-}
-
-func eventColor(kind string) string {
-	switch kind {
-	case "message":
-		return colorCyan
-	case "model_call_success":
-		return colorGreen
-	case "model_call_failure":
-		return colorRed
-	case "tool_execution":
-		return colorYellow
-	case "response":
-		return colorMagenta
-	case "history_truncated":
-		return colorBlue
-	case "report_progress":
-		return colorGreen
-	case "comment_reply":
-		return colorCyan
-	case "pr_summary":
-		return colorMagenta
-	default:
-		return colorWhite
-	}
-}
-
-// resolveKind extracts the semantic event kind. The progress envelope uses
-// kind="log" for all regular sessions-v2 events, so we look inside the
-// content JSON for the real kind in that case.
-func resolveKind(envelopeKind string, content json.RawMessage) string {
-	if envelopeKind != "" && envelopeKind != "log" {
-		return envelopeKind
-	}
-	return extractKind(content)
-}
-
-func printProgressEvent(event server.ProgressEvent) {
-	kind := resolveKind(event.Kind, event.Content)
-	icon := eventIcon(kind)
-	color := eventColor(kind)
-
-	// Print event header with box drawing
-	fmt.Printf("┌─ %s %s%s%s%s\n", icon, color, colorBold, kind, colorReset)
-
-	// Print event details
-	printEventDetails(kind, event.Content)
-
-	if verbose {
-		// In verbose mode, show pretty-printed JSON
-		var raw any
-		if json.Unmarshal(event.Content, &raw) == nil {
-			pretty, _ := json.MarshalIndent(raw, "│  ", "  ")
-			fmt.Printf("│  %s%s%s\n", colorGray, string(pretty), colorReset)
-		}
-	}
-
-	fmt.Println("└─")
-}
-
-func printEventDetails(kind string, raw json.RawMessage) {
-	switch kind {
-	case "message":
-		var ev events.Message
-		if json.Unmarshal(raw, &ev) != nil {
-			return
-		}
-		role := ev.Message.Role
-		roleColor := colorCyan
-		switch role {
-		case "assistant":
-			roleColor = colorGreen
-		case "user":
-			roleColor = colorYellow
-		case "tool":
-			roleColor = colorMagenta
-		}
-
-		if role == "tool" && ev.ToolName != "" {
-			fmt.Printf("│  %sRole:%s %s%s%s  %sTool:%s %s%s%s\n",
-				colorDim, colorReset, roleColor, role, colorReset,
-				colorDim, colorReset, colorYellow, ev.ToolName, colorReset)
-		} else {
-			fmt.Printf("│  %sRole:%s %s%s%s\n", colorDim, colorReset, roleColor, role, colorReset)
-		}
-
-		if ev.Message.Content != "" {
-			printWrapped(ev.Message.Content, colorWhite, 3)
-		}
-
-	case "model_call_success":
-		var ev events.ModelCallSuccess
-		if json.Unmarshal(raw, &ev) != nil {
-			return
-		}
-		if ev.ModelCall.Model != "" {
-			fmt.Printf("│  %sModel:%s %s\n", colorDim, colorReset, ev.ModelCall.Model)
-		}
-		if ev.ResponseUsage.PromptTokens > 0 || ev.ResponseUsage.CompletionTokens > 0 {
-			fmt.Printf("│  %sTokens:%s %s%d%s prompt → %s%d%s completion\n",
-				colorDim, colorReset,
-				colorYellow, ev.ResponseUsage.PromptTokens, colorReset,
-				colorGreen, ev.ResponseUsage.CompletionTokens, colorReset)
-		}
-		if len(ev.ResponseChunk.Choices) > 0 {
-			if text := ev.ResponseChunk.Choices[0].Delta.Content; text != "" {
-				printWrapped(text, colorGreen, 3)
-			}
-		}
-
-	case "model_call_failure":
-		var ev events.ModelCallFailure
-		if json.Unmarshal(raw, &ev) != nil {
-			return
-		}
-		if ev.ModelCall.Error != "" {
-			fmt.Printf("│  %sError:%s %s%s%s\n", colorDim, colorReset, colorRed, truncate(ev.ModelCall.Error, 80), colorReset)
-		}
-
-	case "tool_execution":
-		var ev events.ToolExecution
-		if json.Unmarshal(raw, &ev) != nil {
-			return
-		}
-		name := ev.ToolName
-		if name == "" {
-			name = truncate(ev.ToolCallID, 23)
-		}
-		status := ev.ToolResult.ResultType
-		statusColor := colorYellow
-		switch status {
-		case "success":
-			statusColor = colorGreen
-		case "failure", "error":
-			statusColor = colorRed
-		}
-		fmt.Printf("│  %sTool:%s %s%s%s  %sStatus:%s %s%s%s\n",
-			colorDim, colorReset, colorYellow, name, colorReset,
-			colorDim, colorReset, statusColor, status, colorReset)
-
-	case "response":
-		var ev events.Response
-		if json.Unmarshal(raw, &ev) != nil {
-			return
-		}
-		if ev.Response.Content != "" {
-			printWrapped(ev.Response.Content, colorMagenta, 3)
-		}
-
-	case "history_truncated":
-		var ev events.HistoryTruncated
-		if json.Unmarshal(raw, &ev) != nil {
-			return
-		}
-		fmt.Printf("│  %sMessages:%s %s%d%s → %s%d%s\n",
-			colorDim, colorReset,
-			colorRed, ev.TruncateResult.PreTruncationMessagesLength, colorReset,
-			colorGreen, ev.TruncateResult.PostTruncationMessagesLength, colorReset)
-
-	case "report_progress":
-		var ev events.ReportProgress
-		if json.Unmarshal(raw, &ev) != nil {
-			return
-		}
-		if ev.PRTitle != "" {
-			fmt.Printf("│  %sTitle:%s %s%s%s\n", colorDim, colorReset, colorBold, ev.PRTitle, colorReset)
-		}
-		if ev.PRDescription != "" {
-			lines := strings.Split(ev.PRDescription, "\n")
-			fmt.Printf("│  %sDescription:%s\n", colorDim, colorReset)
-			for i, line := range lines {
-				if i >= 10 {
-					fmt.Printf("│    %s... (%d more lines)%s\n", colorDim, len(lines)-i, colorReset)
-					break
-				}
-				trimmed := strings.TrimSpace(line)
-				switch {
-				case strings.HasPrefix(trimmed, "- [x]"):
-					fmt.Printf("│    %s%s%s\n", colorGreen, line, colorReset)
-				case strings.HasPrefix(trimmed, "- [ ]"):
-					fmt.Printf("│    %s%s%s\n", colorYellow, line, colorReset)
-				default:
-					fmt.Printf("│    %s\n", line)
-				}
-			}
-		}
-
-	case "comment_reply":
-		var ev events.CommentReply
-		if json.Unmarshal(raw, &ev) != nil {
-			return
-		}
-		if ev.CommentID != 0 {
-			fmt.Printf("│  %sComment ID:%s %d\n", colorDim, colorReset, ev.CommentID)
-		}
-		if ev.Message != "" {
-			printWrapped(ev.Message, colorCyan, 5)
-		}
-
-	case "pr_summary":
-		var ev events.PRSummary
-		if json.Unmarshal(raw, &ev) != nil {
-			return
-		}
-		fmt.Printf("│  %s━━━ Final PR Summary ━━━%s\n", colorBold, colorReset)
-		if ev.PRTitle != "" {
-			fmt.Printf("│  %sTitle:%s %s%s%s\n", colorDim, colorReset, colorBold+colorMagenta, ev.PRTitle, colorReset)
-		}
-		if ev.PRDescription != "" {
-			lines := strings.Split(ev.PRDescription, "\n")
-			fmt.Printf("│  %sDescription:%s\n", colorDim, colorReset)
-			for i, line := range lines {
-				if i >= 15 {
-					fmt.Printf("│    %s... (%d more lines)%s\n", colorDim, len(lines)-i, colorReset)
-					break
-				}
-				fmt.Printf("│    %s\n", line)
-			}
-		}
-	}
-}
-
-func printWrapped(text, color string, maxLines int) {
-	wrapped := wrapText(text, 70)
-	for i, line := range wrapped {
-		if i == 0 {
-			fmt.Printf("│  %s\"%s\"%s\n", color, line, colorReset)
-		} else {
-			fmt.Printf("│  %s %s%s\n", color, line, colorReset)
-		}
-		if i >= maxLines-1 {
-			fmt.Printf("│  %s...%s\n", colorDim, colorReset)
-			break
-		}
-	}
-}
-
-func wrapText(text string, width int) []string {
-	if len(text) <= width {
-		return []string{text}
-	}
-
-	var lines []string
-	for len(text) > width {
-		// Find last space before width
-		idx := width
-		for idx > 0 && text[idx] != ' ' {
-			idx--
-		}
-		if idx == 0 {
-			idx = width // No space found, hard break
-		}
-		lines = append(lines, text[:idx])
-		text = text[idx:]
-		if len(text) > 0 && text[0] == ' ' {
-			text = text[1:]
-		}
-	}
-	if len(text) > 0 {
-		lines = append(lines, text)
-	}
-	return lines
-}
-
-func extractKind(raw json.RawMessage) string {
-	var m struct {
-		Kind string `json:"kind"`
-	}
-	if json.Unmarshal(raw, &m) == nil && m.Kind != "" {
-		return m.Kind
-	}
-	return "unknown"
-}
-
-func truncate(s string, maxLen int) string {
-	if len(s) <= maxLen {
-		return s
-	}
-	return s[:maxLen-3] + "..."
-}
-
-// parseRepoURL splits a full repo URL into server URL and owner/repo.
-// e.g. "https://github.com/josebalius/dotfiles" → ("https://github.com", "josebalius/dotfiles")
-func parseRepoURL(raw string) (string, string, error) {
-	u, err := url.Parse(strings.TrimSuffix(raw, ".git"))
-	if err != nil {
-		return "", "", err
-	}
-	path := strings.TrimPrefix(u.Path, "/")
-	parts := strings.SplitN(path, "/", 3)
-	if len(parts) < 2 || parts[0] == "" || parts[1] == "" {
-		return "", "", fmt.Errorf("expected owner/repo in URL path, got %q", path)
-	}
-	serverURL := fmt.Sprintf("%s://%s", u.Scheme, u.Host)
-	nwo := parts[0] + "/" + parts[1]
-	return serverURL, nwo, nil
-}
-
-// cloneRepo clones a GitHub repository to a temporary directory, creates a working branch, and returns the path.
-func cloneRepo(repoURL string) (string, string, error) {
-	// Create a temporary directory
-	tempDir, err := os.MkdirTemp("", "engine-cli-repo-*")
-	if err != nil {
-		return "", "", fmt.Errorf("failed to create temp directory: %w", err)
-	}
-
-	// Clone the repository
-	cmd := exec.Command("git", "clone", "--depth", "1", repoURL, tempDir)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-
-	if err := cmd.Run(); err != nil {
-		// Clean up temp dir on failure
-		_ = os.RemoveAll(tempDir)
-		return "", "", fmt.Errorf("git clone failed: %w", err)
-	}
-
-	// Create and checkout a working branch
-	branchName := fmt.Sprintf("engine-cli-test-%d", time.Now().UnixNano())
-	cmd = exec.Command("git", "checkout", "-b", branchName)
-	cmd.Dir = tempDir
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-
-	if err := cmd.Run(); err != nil {
-		_ = os.RemoveAll(tempDir)
-		return "", "", fmt.Errorf("failed to create branch: %w", err)
-	}
-
-	fmt.Printf("🌿 Created branch: %s\n", branchName)
-
-	// Get absolute path
-	absPath, err := filepath.Abs(tempDir)
-	if err != nil {
-		_ = os.RemoveAll(tempDir)
-		return "", "", fmt.Errorf("failed to get absolute path: %w", err)
-	}
-
-	return absPath, branchName, nil
 }
