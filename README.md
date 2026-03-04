@@ -4,11 +4,17 @@ SDK for building engines on the GitHub Copilot agent platform.
 
 ## Overview
 
-The Copilot Engine SDK provides the building blocks for engines that run on the GitHub Copilot agent platform. It handles:
+The Copilot Engine SDK provides everything you need to build an engine that runs on the GitHub Copilot agent platform:
 
-- **Platform event reporting** — send structured events (assistant messages, tool executions, model call failures) to the platform API
-- **Git utilities** — clone repositories, commit and push changes with proper credential configuration
-- **MCP server** — a Model Context Protocol server exposing `report_progress` and `reply_to_comment` tools for use with any LLM SDK
+- **Platform Client** — send structured events (assistant messages, tool executions, progress updates) to the platform API
+- **Git Utilities** — clone repositories, commit and push changes with secure credential handling
+- **MCP Server** — a Model Context Protocol server exposing `report_progress` and `reply_to_comment` tools
+- **MCP Proxy Discovery** — discover and connect to user-configured MCP servers
+- **Event Factories** — create typed platform events for custom event pipelines
+- **CLI** — local testing harness that simulates the platform for development
+- **[Integration Guide](docs/integration-guide.md)** — step-by-step guide to building an engine
+
+> **📦 Reference Implementation** — See [`github/agent-platform-engine-example`](https://github.com/github/agent-platform-engine-example) for a complete working engine built with this SDK.
 
 ## Installation
 
@@ -83,7 +89,7 @@ finalizeChanges(repoLocation, "Apply fixes");
 
 ### PlatformClient
 
-The main client for communicating with the platform API.
+The main client for communicating with the platform API. Handles event reporting, progress updates, and history persistence.
 
 ```typescript
 const platform = new PlatformClient({
@@ -94,40 +100,59 @@ const platform = new PlatformClient({
 });
 ```
 
-**Methods:**
-- `sendAssistantMessage(opts)` — report an assistant response
+**Event Methods:**
+- `sendAssistantMessage(opts)` — report an assistant response with optional tool calls
+- `sendToolMessage(opts)` — report a tool result message
 - `sendToolExecution(opts)` — report a tool call and its result
 - `sendModelCallFailure(opts)` — report a model invocation failure
 - `sendTruncation(opts)` — report context truncation
 - `sendResponse(opts)` — report a final response
-- `sendReportProgress(opts)` — update PR description/progress
+
+**Progress Methods:**
+- `sendReportProgress(opts)` — update PR title and description
+- `sendCommentReply(opts)` — reply to a PR comment
+
+**History Methods:**
+- `sendRawProgress(payloads)` — send raw progress payloads (used for session history persistence)
+- `fetchProgress(opts)` — retrieve previously stored progress records
 
 ### Git Utilities
+
+Secure git operations with credential handling via `http.extraHeader` (tokens never appear in URLs or process listings).
 
 ```typescript
 import { cloneRepo, commitAndPush, finalizeChanges } from "@github/copilot-engine-sdk";
 
 // Clone a repository with branch setup
 const repoPath = cloneRepo({
-  serverUrl: string;
+  serverUrl: string;       // e.g., "https://github.com"
   repository: string;      // "owner/repo"
-  gitToken: string;
-  branchName: string;
-  commitLogin: string;
-  commitEmail: string;
+  gitToken: string;        // installation token
+  branchName: string;      // branch to checkout or create
+  commitLogin: string;     // git author name
+  commitEmail: string;     // git author email
   cloneDir?: string;       // default: "/tmp/workspace"
 });
 
-// Commit and push changes
+// Commit and push changes (force push for engine-owned branches)
 const result = commitAndPush(repoPath, "commit message");
 
-// Finalize: commit + push any remaining uncommitted changes
+// Finalize: commit + push any remaining uncommitted changes (non-fatal)
 finalizeChanges(repoPath, "final commit message");
 ```
+
+**Branch handling:**
+- If the branch exists on remote, it checks out the existing branch
+- If the branch doesn't exist, it creates a new branch from the default branch
+- Uses `git ls-remote` to distinguish "branch not found" from auth/network errors
 
 ### MCP Server
 
 The SDK includes an MCP server that can be used with any LLM SDK that supports the Model Context Protocol.
+
+**Tools provided:**
+- `report_progress` — commits changes and updates the PR description with a progress checklist
+- `reply_to_comment` — replies to a PR review comment
 
 ```typescript
 import { createEngineMcpServer, startEngineMcpServer } from "@github/copilot-engine-sdk";
@@ -149,25 +174,56 @@ await startEngineMcpServer(server);
 node dist/mcp-server.js /path/to/working-directory
 ```
 
-Environment variables read by the standalone server:
-- `GITHUB_PLATFORM_API_URL` — platform API endpoint
-- `GITHUB_JOB_ID` — job identifier
-- `GITHUB_PLATFORM_API_TOKEN` — API token
-- `GITHUB_JOB_NONCE` — optional job nonce
+### MCP Proxy Discovery
+
+Discover user-configured MCP servers passed to the engine via the platform.
+
+```typescript
+import { discoverMCPServers, isMCPProxyAvailable } from "@github/copilot-engine-sdk";
+
+// Check if MCP proxy is available
+if (isMCPProxyAvailable()) {
+  const servers = discoverMCPServers();
+  // Returns discovered MCP servers the user has configured
+}
+```
 
 ### Event Factories
 
-For advanced usage, you can create event objects directly:
+For advanced usage, create event objects directly:
 
 ```typescript
 import {
   createAssistantMessageEvent,
+  createToolMessageEvent,
   createToolExecutionEvent,
   createModelCallFailureEvent,
   createTruncationEvent,
   createResponseEvent,
 } from "@github/copilot-engine-sdk";
 ```
+
+## CLI — Local Testing
+
+The SDK includes a CLI tool for testing engines locally without the full platform infrastructure. It simulates the platform API, clones a repo, and runs your engine command.
+
+```bash
+cd cli && go build ./cmd/engine-cli
+
+engine-cli run "node dist/index.js" \
+  --repo https://github.com/owner/repo \
+  --problem-statement "Fix the bug in auth.ts" \
+  --action fix \
+  --timeout 5m
+```
+
+The CLI:
+- Clones the target repository to a temp directory
+- Starts a mock HTTP server that mimics the platform API
+- Spawns your engine with the required environment variables
+- Displays progress events in formatted output
+
+See `engine-cli run --help` for all options.
 
 ## Environment Variables
 
@@ -182,6 +238,11 @@ Engines receive these environment variables from the platform:
 | `GITHUB_INFERENCE_TOKEN` | Token for LLM inference calls |
 | `GITHUB_INFERENCE_URL` | Inference API endpoint |
 | `GITHUB_GIT_TOKEN` | Token for git operations |
+
+## Documentation
+
+- **[Integration Guide](docs/integration-guide.md)** — step-by-step guide to building an engine from scratch
+- **[Example Engine](https://github.com/github/agent-platform-engine-example)** — reference implementation
 
 ## License
 
