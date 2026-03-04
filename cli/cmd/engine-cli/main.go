@@ -94,9 +94,6 @@ func init() {
 func runEngine(cmd *cobra.Command, args []string) error {
 	command := args[0]
 
-	fmt.Println("🚀 Engine Test Harness")
-	fmt.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-
 	// Generate a job ID
 	jobID := fmt.Sprintf("test-job-%d", time.Now().UnixNano())
 
@@ -129,9 +126,6 @@ func runEngine(cmd *cobra.Command, args []string) error {
 	branchName := fmt.Sprintf("engine-cli-test-%d", time.Now().UnixNano())
 
 	// Create branch with empty commit and draft PR
-	fmt.Printf("📦 Repository: %s (default branch: %s)\n", repoNWO, defaultBranch)
-	fmt.Printf("🌿 Creating branch: %s\n", branchName)
-
 	setup, err := setupBranchAndPR(apiBaseURL, githubToken, owner, repo, branchName, defaultBranch,
 		fmt.Sprintf("[engine-cli] %s", truncate(problemStatement, 60)),
 		fmt.Sprintf("**Problem:** %s\n\n_Created by engine-cli test harness._", problemStatement),
@@ -139,7 +133,6 @@ func runEngine(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("failed to set up branch and PR: %w", err)
 	}
-	fmt.Printf("🔗 Pull request: %s\n", setup.PRURL)
 
 	// Create mock server
 	jobConfig := server.JobConfig{
@@ -154,12 +147,15 @@ func runEngine(cmd *cobra.Command, args []string) error {
 		CommitEmail:              commitEmail,
 	}
 
-	lastEventKind := ""
-	repeatCount := 0
 	prNumber := setup.PRNumber
+
+	// Track suppressed events for the summary line
+	suppressedCount := 0
+
 	callbacks := server.Callbacks{
 		OnJobFetched: func() {
-			fmt.Println("📋 Engine fetched job details")
+			fmt.Println(separator)
+			fmt.Printf("  %s %s\n", greenStyle.Render("●"), dimStyle.Render("Job details fetched"))
 		},
 		OnProgressEvent: func(event server.ProgressEvent) {
 			kind := resolveKind(event.Kind, event.Content)
@@ -171,9 +167,7 @@ func runEngine(cmd *cobra.Command, args []string) error {
 					PRDescription string `json:"pr_description"`
 				}
 				if json.Unmarshal(event.Content, &ev) == nil && (ev.PRTitle != "" || ev.PRDescription != "") {
-					if err := updatePullRequest(apiBaseURL, githubToken, owner, repo, prNumber, ev.PRTitle, ev.PRDescription); err != nil {
-						fmt.Printf("\n⚠️  Failed to update PR: %v\n", err)
-					}
+					_ = updatePullRequest(apiBaseURL, githubToken, owner, repo, prNumber, ev.PRTitle, ev.PRDescription)
 				}
 			}
 
@@ -181,29 +175,10 @@ func runEngine(cmd *cobra.Command, args []string) error {
 				return
 			}
 
-			// Collapse repeated events of the same kind into a counter
-			if kind == lastEventKind {
-				repeatCount++
-				icon := eventIcon(kind)
-				fmt.Printf("\r\033[K%s %s (%d events)", icon, kind, repeatCount)
-				return
+			// Try to print the event; if nothing was printed, count it as suppressed
+			if !printEvent(event) {
+				suppressedCount++
 			}
-
-			// Finish the previous repeat line if any
-			if repeatCount > 0 {
-				fmt.Println()
-			}
-			lastEventKind = kind
-			repeatCount = 1
-
-			// Events with no meaningful details render as a compact inline counter
-			if !hasEventDetails(kind, event.Content) {
-				icon := eventIcon(kind)
-				fmt.Printf("%s %s (1 event)", icon, kind)
-				return
-			}
-
-			printProgressEvent(event)
 		},
 	}
 
@@ -216,9 +191,6 @@ func runEngine(cmd *cobra.Command, args []string) error {
 			fmt.Printf("⚠️  Failed to load history for assignment %s: %v\n", assignmentID, err)
 		} else if len(previousEvents) > 0 {
 			mockServer.SetPreviousEvents(previousEvents)
-			fmt.Printf("📂 Loaded %d history events from previous run (assignment: %s)\n", len(previousEvents), assignmentID)
-		} else {
-			fmt.Printf("📂 No previous history for assignment: %s\n", assignmentID)
 		}
 	}
 
@@ -235,25 +207,25 @@ func runEngine(cmd *cobra.Command, args []string) error {
 
 	apiURL := fmt.Sprintf("http://localhost:%d/agent", port)
 
-	fmt.Printf("📡 Mock server running on %s\n", apiURL)
-	fmt.Printf("🆔 Job ID: %s\n", jobID)
-	fmt.Printf("📝 Problem: %s\n", truncate(problemStatement, 50))
-	fmt.Printf("⚙️  Command: %s\n", command)
-	fmt.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+	// Print header
 	fmt.Println()
+	fmt.Printf("  %s %s\n", dimStyle.Render("repo:"), boldStyle.Render(repoNWO))
+	fmt.Printf("  %s %s\n", dimStyle.Render("branch:"), mutedStyle.Render(branchName))
+	if setup.PRURL != "" {
+		fmt.Printf("  %s %s\n", dimStyle.Render("pr:"), cyanStyle.Render(setup.PRURL))
+	}
+	fmt.Printf("  %s %s\n", dimStyle.Render("job:"), mutedStyle.Render(jobID))
+	fmt.Printf("  %s %s\n", dimStyle.Render("cmd:"), mutedStyle.Render(command))
+	fmt.Printf("  %s %s\n", dimStyle.Render("timeout:"), mutedStyle.Render(timeout.String()))
 
 	// Set up context with timeout and signal handling
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
-	// Handle interrupt signals
-	interrupted := false
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 	go func() {
 		<-sigChan
-		interrupted = true
-		fmt.Println("\n⚠️  Received interrupt, stopping engine...")
 		cancel()
 	}()
 
@@ -261,19 +233,15 @@ func runEngine(cmd *cobra.Command, args []string) error {
 	runnerCallbacks := runner.Callbacks{
 		OnStdout: func(line string) {
 			if engineLogs {
-				fmt.Printf("│ %s\n", line)
+				fmt.Printf("  %s %s\n", dimStyle.Render("│"), line)
 			}
 		},
 		OnStderr: func(line string) {
 			if engineLogs {
-				fmt.Printf("│ \033[31m%s\033[0m\n", line) // Red for stderr
+				fmt.Printf("  %s %s\n", redStyle.Render("│"), line)
 			}
 		},
 	}
-
-	// Run the engine
-	fmt.Println("▶️  Starting engine...")
-	fmt.Println()
 
 	env := runner.Environment{
 		JobID:          jobID,
@@ -284,29 +252,22 @@ func runEngine(cmd *cobra.Command, args []string) error {
 		GitToken:       githubToken,
 	}
 
-	opts := runner.Options{
-		WorkingDir: workingDir,
-	}
+	result := runner.Run(ctx, command, env, runner.Options{WorkingDir: workingDir}, runnerCallbacks)
 
-	result := runner.Run(ctx, command, env, opts, runnerCallbacks)
-
-	// Finish any pending repeat counter
-	if repeatCount > 1 {
-		fmt.Println()
-	}
-
+	// Summary
+	allEvents := mockServer.Events()
+	displayed := len(allEvents) - suppressedCount
 	fmt.Println()
-	fmt.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+	if result.ExitCode == 0 {
+		fmt.Printf("  %s %s\n", greenStyle.Render("✓"), mutedStyle.Render(fmt.Sprintf("Done (%d events, %d displayed)", len(allEvents), displayed)))
+	} else {
+		fmt.Printf("  %s %s\n", redStyle.Render("✗"), mutedStyle.Render(fmt.Sprintf("Failed with exit code %d (%d events)", result.ExitCode, len(allEvents))))
+	}
 
-	// Print summary
-	events := mockServer.Events()
-	fmt.Printf("📊 Summary:\n")
-	fmt.Printf("   Events received: %d\n", len(events))
-
-	// Save current events as history for next run
-	if assignmentID != "" && len(events) > 0 {
-		records := make([]store.Record, len(events))
-		for i, ev := range events {
+	// Save history
+	if assignmentID != "" && len(allEvents) > 0 {
+		records := make([]store.Record, len(allEvents))
+		for i, ev := range allEvents {
 			records[i] = store.Record{
 				ID:        fmt.Sprintf("progress-%d", i+1),
 				Namespace: ev.Namespace,
@@ -316,41 +277,11 @@ func runEngine(cmd *cobra.Command, args []string) error {
 				CreatedAt: ev.Timestamp.Unix(),
 			}
 		}
-		if err := store.Save(assignmentID, records); err != nil {
-			fmt.Printf("   ⚠️  Failed to save history: %v\n", err)
-		} else {
-			fmt.Printf("   💾 Saved %d events to history (assignment: %s)\n", len(records), assignmentID)
-		}
-	}
-
-	if result.Error != nil {
-		fmt.Printf("   Error: %v\n", result.Error)
-	}
-
-	// Print event summary by kind
-	eventCounts := make(map[string]int)
-	for _, e := range events {
-		kind := resolveKind(e.Kind, e.Content)
-		eventCounts[kind]++
-	}
-
-	if len(eventCounts) > 0 {
-		fmt.Println("   Event types:")
-		for kind, count := range eventCounts {
-			fmt.Printf("     - %s: %d\n", kind, count)
-		}
-	}
-
-	fmt.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-
-	// Don't report error for interrupt or successful exit
-	if interrupted || result.ExitCode == 0 {
-		return nil
+		_ = store.Save(assignmentID, records)
 	}
 
 	if result.ExitCode != 0 {
 		return fmt.Errorf("engine exited with code %d", result.ExitCode)
 	}
-
 	return nil
 }
