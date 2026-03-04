@@ -93,7 +93,7 @@ export type {
 
 export { PlatformClient } from "./client.js";
 
-export type { PlatformClientConfig, ProgressPayload, ProgressRecord, ProgressResponse, SendResult } from "./client.js";
+export type { PlatformClientConfig, ProgressPayload, ProgressRecord, ProgressResponse, SendResult, JobDetails, ProblemStatement } from "./client.js";
 
 // =============================================================================
 // MCP Server

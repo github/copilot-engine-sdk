@@ -11,7 +11,7 @@
       "types": "./dist/index.d.ts"
     },
     "./mcp-server": {
-      "import": "./dist/mcp-server.js",
+      "import": "./dist/mcp-server.bundled.js",
       "types": "./dist/mcp-server.d.ts"
     }
   },

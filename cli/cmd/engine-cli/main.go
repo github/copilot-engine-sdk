@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"os"
 	"os/signal"
 	"strings"
@@ -112,8 +113,9 @@ func runEngine(cmd *cobra.Command, args []string) error {
 	// Determine owner/repo and API base URL
 	parts := strings.SplitN(repoNWO, "/", 2)
 	owner, repo := parts[0], parts[1]
+	parsedURL, _ := url.Parse(serverURL)
 	apiBaseURL := serverURL + "/api/v3"
-	if strings.Contains(serverURL, "github.com") {
+	if parsedURL != nil && (parsedURL.Host == "github.com" || parsedURL.Host == "www.github.com") {
 		apiBaseURL = "https://api.github.com"
 	}
 
@@ -125,13 +127,15 @@ func runEngine(cmd *cobra.Command, args []string) error {
 
 	branchName := fmt.Sprintf("engine-cli-test-%d", time.Now().UnixNano())
 
-	// Create branch with empty commit and draft PR
+	// Create branch with empty commit and PR (best-effort — may fail if token lacks permissions)
 	setup, err := setupBranchAndPR(apiBaseURL, githubToken, owner, repo, branchName, defaultBranch,
 		fmt.Sprintf("[engine-cli] %s", truncate(problemStatement, 60)),
 		fmt.Sprintf("**Problem:** %s\n\n_Created by engine-cli test harness._", problemStatement),
 	)
 	if err != nil {
-		return fmt.Errorf("failed to set up branch and PR: %w", err)
+		fmt.Fprintf(os.Stderr, "  warning: could not pre-create branch/PR: %v\n", err)
+		fmt.Fprintf(os.Stderr, "  (the engine will create the branch on push)\n")
+		setup = &SetupResult{BranchName: branchName}
 	}
 
 	// Create mock server
@@ -168,17 +172,20 @@ func runEngine(cmd *cobra.Command, args []string) error {
 					PRDescription string `json:"pr_description"`
 				}
 				if json.Unmarshal(event.Content, &ev) == nil && (ev.PRTitle != "" || ev.PRDescription != "") {
-					_ = updatePullRequest(apiBaseURL, githubToken, owner, repo, prNumber, ev.PRTitle, ev.PRDescription)
+					if err := updatePullRequest(apiBaseURL, githubToken, owner, repo, prNumber, ev.PRTitle, ev.PRDescription); err != nil {
+						fmt.Fprintf(os.Stderr, "  warning: failed to update PR: %v\n", err)
+					}
 				}
 			}
 
 			if engineLogs {
+				// Track all events as suppressed when in engine-logs mode
+				suppressedCounts[eventKey{event.Namespace, kind}]++
 				return
 			}
 
 			// Try to print the event; if nothing was printed, track it
 			if !printEvent(event) {
-				kind := resolveKind(event.Kind, event.Content)
 				suppressedCounts[eventKey{event.Namespace, kind}]++
 			}
 		},
@@ -245,12 +252,18 @@ func runEngine(cmd *cobra.Command, args []string) error {
 		},
 	}
 
+	inferenceURL := os.Getenv("GITHUB_INFERENCE_URL")
+	if inferenceURL == "" {
+		inferenceURL = "https://api.githubcopilot.com"
+	}
+
 	env := runner.Environment{
 		JobID:          jobID,
 		APIToken:       githubToken,
 		APIURL:         apiURL,
 		JobNonce:       mockServer.Nonce(),
 		InferenceToken: githubToken,
+		InferenceURL:   inferenceURL,
 		GitToken:       githubToken,
 	}
 

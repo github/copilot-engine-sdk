@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"sync"
 )
 
 // Environment contains the platform environment variables for the engine.
@@ -19,6 +20,7 @@ type Environment struct {
 	APIURL         string
 	JobNonce       string
 	InferenceToken string
+	InferenceURL   string
 	GitToken       string
 }
 
@@ -76,8 +78,12 @@ func Run(ctx context.Context, command string, env Environment, opts Options, cal
 		return Result{ExitCode: 1, Error: fmt.Errorf("failed to start command: %w", err)}
 	}
 
-	// Read stdout in a goroutine
+	// Read stdout and stderr in goroutines
+	var wg sync.WaitGroup
+	wg.Add(2)
+
 	go func() {
+		defer wg.Done()
 		scanner := bufio.NewScanner(stdout)
 		for scanner.Scan() {
 			if callbacks.OnStdout != nil {
@@ -86,8 +92,8 @@ func Run(ctx context.Context, command string, env Environment, opts Options, cal
 		}
 	}()
 
-	// Read stderr in a goroutine
 	go func() {
+		defer wg.Done()
 		scanner := bufio.NewScanner(stderr)
 		for scanner.Scan() {
 			if callbacks.OnStderr != nil {
@@ -96,8 +102,9 @@ func Run(ctx context.Context, command string, env Environment, opts Options, cal
 		}
 	}()
 
-	// Wait for the command to finish
+	// Wait for the command to finish, then drain remaining output
 	err = cmd.Wait()
+	wg.Wait()
 	exitCode := 0
 	if err != nil {
 		if exitErr, ok := err.(*exec.ExitError); ok {
@@ -123,6 +130,10 @@ func buildEnv(env Environment, extra map[string]string) []string {
 		"GITHUB_PLATFORM_API_URL":    env.APIURL,
 		"GITHUB_INFERENCE_TOKEN":     env.InferenceToken,
 		"GITHUB_GIT_TOKEN":           env.GitToken,
+	}
+
+	if env.InferenceURL != "" {
+		platformVars["GITHUB_INFERENCE_URL"] = env.InferenceURL
 	}
 
 	for k, v := range platformVars {

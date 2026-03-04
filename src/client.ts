@@ -223,7 +223,12 @@ export class PlatformClient {
 
             // Try to parse response (may contain user_messages)
             const text = await response.text();
-            const parsed = text.trim() ? (JSON.parse(text) as ProgressResponse) : undefined;
+            let parsed: ProgressResponse | undefined;
+            try {
+                parsed = text.trim() ? (JSON.parse(text) as ProgressResponse) : undefined;
+            } catch {
+                // Invalid JSON in response — treat as success with no parsed body
+            }
 
             return {
                 success: true,
@@ -429,6 +434,57 @@ export class PlatformClient {
             return null;
         }
     }
+
+    /**
+     * Fetches job details from the platform API.
+     *
+     * @returns Job details including problem statement, repository info, and branch
+     */
+    async fetchJobDetails(): Promise<JobDetails> {
+        const url = new URL(`jobs/${this._jobId}`, this.baseUrl);
+
+        const response = await fetch(url.toString(), {
+            method: "GET",
+            headers: this.headers,
+        });
+
+        if (!response.ok) {
+            throw new Error(
+                `Failed to fetch job details: HTTP ${response.status} ${response.statusText}`
+            );
+        }
+
+        const data = (await response.json()) as JobDetails;
+
+        if (!data.problem_statement?.content) {
+            throw new Error("Job details missing required field: problem_statement.content");
+        }
+
+        return data;
+    }
+}
+
+// =============================================================================
+// Job Details Types
+// =============================================================================
+
+/** Problem statement from the job */
+export interface ProblemStatement {
+    content: string;
+}
+
+/** Job details returned from the platform API */
+export interface JobDetails {
+    ID: string;
+    problem_statement: ProblemStatement;
+    organization_custom_instructions?: string;
+    action: string;
+    repository: string;
+    server_url: string;
+    branch_name?: string;
+    commit_login: string;
+    commit_email: string;
+    mcp_proxy_url?: string;
 }
 
 /**

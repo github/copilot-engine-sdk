@@ -264,35 +264,36 @@ func containsError(s string) bool {
 func wrapText(text string, width int) []string {
 	var lines []string
 	for _, paragraph := range strings.Split(text, "\n") {
-		if len(paragraph) <= width {
+		runes := []rune(paragraph)
+		if len(runes) <= width {
 			lines = append(lines, paragraph)
 			continue
 		}
-		remaining := paragraph
-		for len(remaining) > width {
-			idx := width
-			for idx > 0 && remaining[idx] != ' ' {
+		for len(runes) > width {
+			idx := width - 1
+			for idx > 0 && runes[idx] != ' ' {
 				idx--
 			}
 			if idx == 0 {
 				idx = width
 			}
-			lines = append(lines, remaining[:idx])
-			remaining = remaining[idx:]
-			if len(remaining) > 0 && remaining[0] == ' ' {
-				remaining = remaining[1:]
+			lines = append(lines, string(runes[:idx]))
+			runes = runes[idx:]
+			if len(runes) > 0 && runes[0] == ' ' {
+				runes = runes[1:]
 			}
 		}
-		if len(remaining) > 0 {
-			lines = append(lines, remaining)
+		if len(runes) > 0 {
+			lines = append(lines, string(runes))
 		}
 	}
 	return lines
 }
 
 func truncate(s string, maxLen int) string {
-	if len(s) <= maxLen {
+	runes := []rune(s)
+	if len(runes) <= maxLen {
 		return s
 	}
-	return s[:maxLen-3] + "..."
+	return string(runes[:maxLen-3]) + "..."
 }

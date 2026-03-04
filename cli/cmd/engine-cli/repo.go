@@ -10,7 +10,11 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 )
+
+// HTTP client with a reasonable timeout for GitHub API calls.
+var apiClient = &http.Client{Timeout: 30 * time.Second}
 
 // parseRepoURL splits a full repo URL into server URL and owner/repo.
 // e.g. "https://github.com/josebalius/dotfiles" → ("https://github.com", "josebalius/dotfiles")
@@ -18,6 +22,9 @@ func parseRepoURL(raw string) (string, string, error) {
 	u, err := url.Parse(strings.TrimSuffix(raw, ".git"))
 	if err != nil {
 		return "", "", err
+	}
+	if u.Scheme == "" || u.Host == "" {
+		return "", "", fmt.Errorf("invalid repo URL %q: must include scheme and host (e.g. https://github.com/owner/repo)", raw)
 	}
 	path := strings.TrimPrefix(u.Path, "/")
 	parts := strings.SplitN(path, "/", 3)
@@ -172,7 +179,7 @@ func githubAPI(method, url, token string, payload any) ([]byte, error) {
 		req.Header.Set("Content-Type", "application/json")
 	}
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := apiClient.Do(req)
 	if err != nil {
 		return nil, err
 	}
