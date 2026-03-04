@@ -67,6 +67,7 @@ func printEvent(event server.ProgressEvent) bool {
 	case "comment_reply":
 		return printCommentReply(event.Content)
 	default:
+		// Custom namespace/kind — don't render inline, counted in summary
 		return false
 	}
 }

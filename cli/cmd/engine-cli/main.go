@@ -149,8 +149,9 @@ func runEngine(cmd *cobra.Command, args []string) error {
 
 	prNumber := setup.PRNumber
 
-	// Track suppressed events for the summary line
-	suppressedCount := 0
+	// Track suppressed events for the summary
+	type eventKey struct{ namespace, kind string }
+	suppressedCounts := make(map[eventKey]int)
 
 	callbacks := server.Callbacks{
 		OnJobFetched: func() {
@@ -175,9 +176,10 @@ func runEngine(cmd *cobra.Command, args []string) error {
 				return
 			}
 
-			// Try to print the event; if nothing was printed, count it as suppressed
+			// Try to print the event; if nothing was printed, track it
 			if !printEvent(event) {
-				suppressedCount++
+				kind := resolveKind(event.Kind, event.Content)
+				suppressedCounts[eventKey{event.Namespace, kind}]++
 			}
 		},
 	}
@@ -256,12 +258,38 @@ func runEngine(cmd *cobra.Command, args []string) error {
 
 	// Summary
 	allEvents := mockServer.Events()
-	displayed := len(allEvents) - suppressedCount
-	fmt.Println()
+	totalSuppressed := 0
+	for _, c := range suppressedCounts {
+		totalSuppressed += c
+	}
+	displayed := len(allEvents) - totalSuppressed
+
+	fmt.Println(separator)
 	if result.ExitCode == 0 {
-		fmt.Printf("  %s %s\n", greenStyle.Render("✓"), mutedStyle.Render(fmt.Sprintf("Done (%d events, %d displayed)", len(allEvents), displayed)))
+		fmt.Printf("  %s %s\n", greenStyle.Render("●"), boldStyle.Render("Done"))
 	} else {
-		fmt.Printf("  %s %s\n", redStyle.Render("✗"), mutedStyle.Render(fmt.Sprintf("Failed with exit code %d (%d events)", result.ExitCode, len(allEvents))))
+		fmt.Printf("  %s %s\n", redStyle.Render("●"), boldStyle.Render(fmt.Sprintf("Failed (exit code %d)", result.ExitCode)))
+	}
+	fmt.Printf("    %s %d displayed, %d total\n", dimStyle.Render("events:"), displayed, len(allEvents))
+	if len(suppressedCounts) > 0 {
+		// Only show non-platform namespaces in the "other" section
+		hasCustom := false
+		for key := range suppressedCounts {
+			if key.namespace != "" && key.namespace != "sessions-v2" {
+				hasCustom = true
+				break
+			}
+		}
+		if hasCustom {
+			fmt.Printf("    %s\n", dimStyle.Render("other:"))
+			for key, count := range suppressedCounts {
+				if key.namespace == "" || key.namespace == "sessions-v2" {
+					continue
+				}
+				label := key.namespace + ":" + key.kind
+				fmt.Printf("      %s %s\n", mutedStyle.Render(label), mutedStyle.Render(fmt.Sprintf("(%d)", count)))
+			}
+		}
 	}
 
 	// Save history
