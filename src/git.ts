@@ -17,6 +17,23 @@ import { existsSync } from "fs";
 const DEFAULT_CLONE_DIR = "/tmp/workspace";
 
 // =============================================================================
+// Helpers
+// =============================================================================
+
+/**
+ * Checks if a branch exists on the remote using ls-remote.
+ * This avoids masking auth/network errors as "branch not found".
+ */
+function branchExistsOnRemote(repoLocation: string, branchName: string): boolean {
+    const output = execFileSync("git", ["ls-remote", "--heads", "origin", branchName], {
+        cwd: repoLocation,
+        encoding: "utf-8",
+        stdio: ["pipe", "pipe", "pipe"],
+    }).trim();
+    return output.length > 0;
+}
+
+// =============================================================================
 // Types
 // =============================================================================
 
@@ -93,12 +110,13 @@ export function cloneRepo(options: CloneRepoOptions): string {
         execFileSync("git", ["checkout", "-f", "HEAD"], { cwd: repoLocation });
 
         if (branchName) {
-            // Try to fetch and reset to the remote branch; create locally if it doesn't exist
-            try {
+            // Check if branch exists on remote before attempting fetch
+            const remoteBranchExists = branchExistsOnRemote(repoLocation, branchName);
+            if (remoteBranchExists) {
                 execFileSync("git", ["fetch", "--depth", "2", "origin", branchName], { cwd: repoLocation, stdio: "pipe" });
-                execFileSync("git", ["checkout", "-B", branchName, `origin/${branchName}`], { cwd: repoLocation });
+                execFileSync("git", ["checkout", "-B", branchName, "FETCH_HEAD"], { cwd: repoLocation });
                 console.log(`[Engine SDK] Checked out existing branch: ${branchName}`);
-            } catch {
+            } else {
                 // Branch doesn't exist on remote — fetch default branch and create new branch from it
                 execFileSync("git", ["fetch", "--depth", "2", "origin"], { cwd: repoLocation, stdio: "pipe" });
                 execFileSync("git", ["checkout", "-B", branchName, "FETCH_HEAD"], { cwd: repoLocation });
@@ -106,7 +124,7 @@ export function cloneRepo(options: CloneRepoOptions): string {
             }
         }
     } else {
-        const authenticatedUrl = cloneUrl.replace("://", `://x-access-token:${gitToken}@`);
+        const authHeader = `Authorization: basic ${Buffer.from(`x-access-token:${gitToken}`).toString("base64")}`;
 
         // Try to clone the existing remote branch directly.
         // If the branch doesn't exist yet, fall back to a default clone + new branch.
@@ -116,7 +134,7 @@ export function cloneRepo(options: CloneRepoOptions): string {
                 console.log(`[Engine SDK] Cloning ${repository} (branch: ${branchName}) to ${repoLocation}...`);
                 execFileSync(
                     "git",
-                    ["clone", "-b", branchName, "--single-branch", "--depth", "2", authenticatedUrl, repoLocation],
+                    ["-c", `http.extraHeader=${authHeader}`, "clone", "-b", branchName, "--single-branch", "--depth", "2", cloneUrl, repoLocation],
                     { stdio: "inherit" }
                 );
                 clonedExistingBranch = true;
@@ -127,7 +145,7 @@ export function cloneRepo(options: CloneRepoOptions): string {
 
         if (!clonedExistingBranch) {
             console.log(`[Engine SDK] Cloning ${repository} to ${repoLocation}...`);
-            execFileSync("git", ["clone", "--depth", "2", authenticatedUrl, repoLocation], {
+            execFileSync("git", ["-c", `http.extraHeader=${authHeader}`, "clone", "--depth", "2", cloneUrl, repoLocation], {
                 stdio: "inherit",
             });
 
@@ -137,7 +155,7 @@ export function cloneRepo(options: CloneRepoOptions): string {
             }
         }
 
-        // Configure credentials and remote URL (replace embedded-token URL)
+        // Configure credentials and remote URL
         configureGit();
         console.log(`[Engine SDK] Clone complete.`);
     }
@@ -167,7 +185,7 @@ export function commitAndPush(repoLocation: string, commitMessage: string): Comm
         execFileSync("git", ["commit", "-m", commitMessage], { cwd: repoLocation });
     }
 
-    execFileSync("git", ["push", "--force", "--set-upstream", "origin", "HEAD"], { cwd: repoLocation });
+    execFileSync("git", ["push", "--set-upstream", "origin", "HEAD"], { cwd: repoLocation });
 
     return {
         success: true,

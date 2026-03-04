@@ -119,3 +119,11 @@ export type {
 export { cloneRepo, commitAndPush, finalizeChanges } from "./git.js";
 
 export type { CloneRepoOptions, CommitAndPushResult } from "./git.js";
+
+// =============================================================================
+// MCP Proxy Discovery
+// =============================================================================
+
+export { discoverMCPServers, isMCPProxyAvailable } from "./mcp-proxy.js";
+
+export type { MCPServerEntry, DiscoveredMCPServer } from "./mcp-proxy.js";
