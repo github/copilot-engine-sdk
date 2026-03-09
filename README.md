@@ -18,7 +18,7 @@ The Copilot Engine SDK provides everything you need to build an engine that runs
 
 ## Installation
 
-This package is hosted as a private GitHub repository. Add it to your `package.json`:
+Until this package is published to a package registry, install it directly from GitHub:
 
 ```json
 {
@@ -28,7 +28,7 @@ This package is hosted as a private GitHub repository. Add it to your `package.j
 }
 ```
 
-Then run `npm install`. Git credentials must be available for private repo access (e.g., `GITHUB_TOKEN`, SSH keys, or git credential helper).
+Then run `npm install`.
 
 ### Local Development
 
@@ -244,6 +244,18 @@ Engines receive these environment variables from the platform:
 - **[Integration Guide](docs/integration-guide.md)** — step-by-step guide to building an engine from scratch
 - **[Example Engine](https://github.com/github/agent-platform-engine-example)** — reference implementation
 
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for local setup, build commands, and pull request guidance.
+
+## Support
+
+See [SUPPORT.md](SUPPORT.md) for how to ask questions or report bugs.
+
+## Security
+
+See [SECURITY.md](SECURITY.md) for how to report security vulnerabilities.
+
 ## License
 
-MIT
+See [LICENSE](LICENSE).

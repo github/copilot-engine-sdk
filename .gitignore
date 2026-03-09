@@ -3,3 +3,4 @@ dist/
 pkg/
 *.tsbuildinfo
 bin/gofumpt
+cli/engine-cli

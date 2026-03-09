@@ -102,14 +102,16 @@ The **first thing your engine should do** is fetch the job details. This call re
 ### Using the SDK
 
 ```typescript
-import { fetchJobDetails } from "@github/copilot-engine-sdk";
+import { PlatformClient } from "@github/copilot-engine-sdk";
 
-const job = await fetchJobDetails(
-  process.env.GITHUB_PLATFORM_API_URL,
-  process.env.GITHUB_JOB_ID,
-  process.env.GITHUB_PLATFORM_API_TOKEN,
-  process.env.GITHUB_JOB_NONCE,
-);
+const platform = new PlatformClient({
+  apiUrl: process.env.GITHUB_PLATFORM_API_URL!,
+  jobId: process.env.GITHUB_JOB_ID!,
+  token: process.env.GITHUB_PLATFORM_API_TOKEN!,
+  nonce: process.env.GITHUB_JOB_NONCE,
+});
+
+const job = await platform.fetchJobDetails();
 ```
 
 ### Calling the API Directly
@@ -449,7 +451,7 @@ When called, it sends a `comment_reply` event to the platform, which posts a rep
 
 ### User-Provided MCP Servers
 
-Users can configure their own MCP servers (e.g., internal code search, documentation tools, database access) through the platform. These servers are **started by the platform before your engine is launched** and run outside the firewall so they have unrestricted network access.
+Users can configure their own MCP servers (for example, code search, documentation tools, or database access) through the platform. These servers are **started by the platform before your engine is launched** and run outside the firewall so they have unrestricted network access.
 
 The job response includes an `mcp_proxy_url` field when user MCP servers are configured. The proxy is an HTTP server that bridges your engine to the user's MCP servers. Your engine discovers available servers from the proxy and connects to them as HTTP MCP endpoints.
 
@@ -823,7 +825,7 @@ flowchart LR
 ```
 
 ```typescript
-import { PlatformClient, cloneRepo, finalizeChanges, fetchJobDetails } from "@github/copilot-engine-sdk";
+import { PlatformClient, cloneRepo, finalizeChanges } from "@github/copilot-engine-sdk";
 import { CopilotClient } from "@github/copilot-sdk";
 
 async function main() {
@@ -835,8 +837,15 @@ async function main() {
   const gitToken = process.env.GITHUB_GIT_TOKEN!;
   const inferenceToken = process.env.GITHUB_INFERENCE_TOKEN!;
 
+  const platform = new PlatformClient({
+    apiUrl,
+    jobId,
+    token: apiToken,
+    nonce,
+  });
+
   // 2. Fetch job details (problem statement, repo metadata, action type)
-  const job = await fetchJobDetails(apiUrl, jobId, apiToken, nonce);
+  const job = await platform.fetchJobDetails();
 
   // 3. Clone the repository
   const repoLocation = cloneRepo({
