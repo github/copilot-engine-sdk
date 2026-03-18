@@ -909,7 +909,9 @@ git push origin v1.0.0
 
 ### Release Workflow
 
-Add a workflow that triggers on version tags, builds your engine, and attaches the artifact to a GitHub Release:
+Add a workflow that triggers on version tags, builds your engine, and attaches the artifact to a GitHub Release.
+
+> **Note:** The example below is for a Node.js/TypeScript engine. If your engine uses a different runtime (Python, Go, Rust, etc.), substitute the appropriate setup, dependency installation, and build steps, and adjust the artifact paths to match your compiled output.
 
 ```yaml
 # .github/workflows/release.yml
@@ -952,7 +954,7 @@ jobs:
 
 Your release artifact must include `engine.yaml` and everything it references. The `entrypoint` in `engine.yaml` is resolved as a relative path, so any files or directories it points to need to be in the tarball alongside it. For example, if your entrypoint is `node dist/index.js`, then `dist/index.js` (and any of its runtime dependencies) must be present.
 
-The release should be self-contained — the platform should be able to extract it and run the entrypoint without cloning the repo, installing dependencies, or building from source.
+The release should be self-contained — the platform should be able to extract it and run the entrypoint without cloning the repo, installing dependencies, or building from source. This means your build output must include all runtime dependencies. For Node.js engines, either use a bundler (e.g., esbuild, webpack, or ncc) to produce a single self-contained file, or include the `node_modules` directory in the tarball. Other runtimes should follow their equivalent strategy — for example, Go and Rust engines can compile to a static binary, while Python engines might vendor dependencies or include a virtual environment.
 
 
 ## Architecture Notes
