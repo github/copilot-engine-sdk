@@ -14,8 +14,6 @@ The Copilot Engine SDK provides everything you need to build an engine that runs
 - **CLI** — local testing harness that simulates the platform for development
 - **[Integration Guide](docs/integration-guide.md)** — step-by-step guide to building an engine
 
-> **📦 Reference Implementation** — See [`github/agent-platform-engine-example`](https://github.com/github/agent-platform-engine-example) for a complete working engine built with this SDK.
-
 ## Installation
 
 Until this package is published to a package registry, install it directly from GitHub:
@@ -242,7 +240,6 @@ Engines receive these environment variables from the platform:
 ## Documentation
 
 - **[Integration Guide](docs/integration-guide.md)** — step-by-step guide to building an engine from scratch
-- **[Example Engine](https://github.com/github/agent-platform-engine-example)** — reference implementation
 
 ## Contributing
 
