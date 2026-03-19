@@ -935,7 +935,7 @@ jobs:
           - os: ubuntu-latest
             platform: linux
             arch: x64
-          - os: ubuntu-latest
+          - os: ubuntu-latest # Cross-build: uses TARGET_ARCH env var, not native arm64
             platform: linux
             arch: arm64
           - os: macos-latest
@@ -977,6 +977,8 @@ jobs:
 ```
 
 Each matrix job builds for its target platform (using `TARGET_PLATFORM` and `TARGET_ARCH` environment variables) and uploads a named tarball. The result is a single GitHub Release with one artifact per platform.
+
+> **Note:** This example uses cross-building — the `linux/arm64` job runs on an x64 runner and relies on `TARGET_ARCH` to select the correct platform-specific binaries at build time rather than compiling natively. This works well for engines that bundle pre-built binaries or use interpreted runtimes. If your engine includes native compilation steps (e.g., building C/C++ extensions or Rust crates for arm64), you will need either an actual arm64 runner or a QEMU/cross-toolchain emulation setup.
 
 ### What to Include in the Release
 
