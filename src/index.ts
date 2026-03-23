@@ -91,9 +91,9 @@ export type {
 // Platform Client
 // =============================================================================
 
-export { PlatformClient } from "./client.js";
+export { PlatformClient, resolveSelectedModel, isModelSelectionEnabled } from "./client.js";
 
-export type { PlatformClientConfig, ProgressPayload, ProgressRecord, ProgressResponse, SendResult, JobDetails, ProblemStatement } from "./client.js";
+export type { PlatformClientConfig, ProgressPayload, ProgressRecord, ProgressResponse, SendResult, JobDetails, ProblemStatement, ResolveSelectedModelOptions } from "./client.js";
 
 // =============================================================================
 // MCP Server

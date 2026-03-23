@@ -485,6 +485,93 @@ export interface JobDetails {
     commit_login: string;
     commit_email: string;
     mcp_proxy_url?: string;
+    /** Engine family selected for this run (e.g., "claude" or "codex"). Present when model selection is enabled. */
+    selected_engine?: string;
+    /** Model selected by the platform for this run. Present when model selection is enabled. */
+    selected_model?: string;
+    /** Default model for the selected engine. Present when model selection is enabled. */
+    default_model?: string;
+    /** Models the engine can choose from. Present when model selection is enabled. */
+    available_models?: string[];
+    /** Feature flags enabled for this job. */
+    features?: {
+        /** Whether the platform has enabled model selection for this job. */
+        model_selection?: boolean;
+    };
+}
+
+/**
+ * Check whether the platform has enabled model selection for this job.
+ *
+ * When this returns `false`, engines should use their own hardcoded model.
+ */
+export function isModelSelectionEnabled(job: Pick<JobDetails, "features">): boolean {
+    return job.features?.model_selection === true;
+}
+
+/**
+ * Resolve which model an engine should use for a job.
+ *
+ * Returns `undefined` when model selection is not enabled for the job
+ * (i.e. `features.model_selection` is not `true`), allowing engines that
+ * do not support model selection to ignore it entirely.
+ *
+ * When enabled, the selection order is:
+ * 1) caller preferred model
+ * 2) model selected by platform (`selected_model`)
+ * 3) platform-provided engine default (`default_model`)
+ * 4) caller fallback model
+ *
+ * If `available_models` is present the resolved model must appear in that
+ * list.  When no candidate matches, the first available model is returned
+ * and a warning is logged if `selected_model` was set but missing from the
+ * list (indicates a platform misconfiguration).
+ */
+/** Options for {@link resolveSelectedModel}. */
+export interface ResolveSelectedModelOptions {
+    /** Model the engine prefers to use, checked first. */
+    preferredModel?: string;
+    /** Model to fall back to when no platform-provided candidate matches. */
+    fallbackModel?: string;
+}
+
+export function resolveSelectedModel(
+    job: Pick<JobDetails, "selected_model" | "default_model" | "available_models" | "features">,
+    options?: ResolveSelectedModelOptions,
+): string | undefined {
+    // Model selection must be explicitly enabled via feature flag
+    if (!job.features?.model_selection) {
+        return undefined;
+    }
+
+    const availableModels = job.available_models?.filter((model) => model.trim().length > 0) ?? [];
+
+    const candidates = [
+        options?.preferredModel,
+        job.selected_model,
+        job.default_model,
+        options?.fallbackModel,
+    ].filter((model): model is string => Boolean(model && model.trim().length > 0));
+
+    if (availableModels.length === 0) {
+        return candidates[0];
+    }
+
+    for (const candidate of candidates) {
+        if (availableModels.includes(candidate)) {
+            return candidate;
+        }
+    }
+
+    // Warn when the platform-selected model is not in the available list
+    if (job.selected_model && !availableModels.includes(job.selected_model)) {
+        console.warn(
+            `resolveSelectedModel: selected_model "${job.selected_model}" is not in available_models [${availableModels.join(", ")}]. ` +
+            `Falling back to "${availableModels[0]}".`
+        );
+    }
+
+    return availableModels[0];
 }
 
 /**

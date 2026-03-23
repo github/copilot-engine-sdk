@@ -6,6 +6,7 @@ package runner
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -15,13 +16,17 @@ import (
 
 // Environment contains the platform environment variables for the engine.
 type Environment struct {
-	JobID          string
-	APIToken       string
-	APIURL         string
-	JobNonce       string
-	InferenceToken string
-	InferenceURL   string
-	GitToken       string
+	JobID           string
+	APIToken        string
+	APIURL          string
+	JobNonce        string
+	InferenceToken  string
+	InferenceURL    string
+	GitToken        string
+	SelectedEngine  string
+	SelectedModel   string
+	DefaultModel    string
+	AvailableModels []string
 }
 
 // Callbacks contains optional callbacks for runner events.
@@ -124,16 +129,35 @@ func buildEnv(env Environment, extra map[string]string) []string {
 	// Add platform environment variables
 	// Note: We use GITHUB_* prefix for consistency with GitHub platform conventions
 	platformVars := map[string]string{
-		"GITHUB_JOB_ID":              env.JobID,
-		"GITHUB_JOB_NONCE":           env.JobNonce,
-		"GITHUB_PLATFORM_API_TOKEN":  env.APIToken,
-		"GITHUB_PLATFORM_API_URL":    env.APIURL,
-		"GITHUB_INFERENCE_TOKEN":     env.InferenceToken,
-		"GITHUB_GIT_TOKEN":           env.GitToken,
+		"GITHUB_JOB_ID":             env.JobID,
+		"GITHUB_JOB_NONCE":          env.JobNonce,
+		"GITHUB_PLATFORM_API_TOKEN": env.APIToken,
+		"GITHUB_PLATFORM_API_URL":   env.APIURL,
+		"GITHUB_INFERENCE_TOKEN":    env.InferenceToken,
+		"GITHUB_GIT_TOKEN":          env.GitToken,
 	}
 
 	if env.InferenceURL != "" {
 		platformVars["GITHUB_INFERENCE_URL"] = env.InferenceURL
+	}
+
+	if env.SelectedEngine != "" {
+		platformVars["GITHUB_SELECTED_ENGINE"] = env.SelectedEngine
+	}
+
+	if env.SelectedModel != "" {
+		platformVars["GITHUB_SELECTED_MODEL"] = env.SelectedModel
+	}
+
+	if env.DefaultModel != "" {
+		platformVars["GITHUB_DEFAULT_MODEL"] = env.DefaultModel
+	}
+
+	if len(env.AvailableModels) > 0 {
+		// json.Marshal cannot fail for []string, but handle the error defensively.
+		if encoded, err := json.Marshal(env.AvailableModels); err == nil {
+			platformVars["GITHUB_AVAILABLE_MODELS"] = string(encoded)
+		}
 	}
 
 	for k, v := range platformVars {
