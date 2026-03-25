@@ -273,17 +273,20 @@ func runEngine(cmd *cobra.Command, args []string) error {
 	}
 
 	env := runner.Environment{
-		JobID:           jobID,
-		APIToken:        githubToken,
-		APIURL:          apiURL,
-		JobNonce:        mockServer.Nonce(),
-		InferenceToken:  githubToken,
-		InferenceURL:    inferenceURL,
-		GitToken:        githubToken,
-		SelectedEngine:  selectedEngine,
-		SelectedModel:   selectedModel,
-		DefaultModel:    defaultModel,
-		AvailableModels: availableModels,
+		JobID:          jobID,
+		APIToken:       githubToken,
+		APIURL:         apiURL,
+		JobNonce:       mockServer.Nonce(),
+		InferenceToken: githubToken,
+		InferenceURL:   inferenceURL,
+		GitToken:       githubToken,
+	}
+
+	if enableModelSelection {
+		env.SelectedEngine = selectedEngine
+		env.SelectedModel = selectedModel
+		env.DefaultModel = defaultModel
+		env.AvailableModels = availableModels
 	}
 
 	result := runner.Run(ctx, command, env, runner.Options{WorkingDir: workingDir}, runnerCallbacks)

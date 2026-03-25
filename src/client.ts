@@ -540,18 +540,21 @@ export function resolveSelectedModel(
     options?: ResolveSelectedModelOptions,
 ): string | undefined {
     // Model selection must be explicitly enabled via feature flag
-    if (!job.features?.model_selection) {
+    if (job.features?.model_selection !== true) {
         return undefined;
     }
 
-    const availableModels = job.available_models?.filter((model) => model.trim().length > 0) ?? [];
+    const availableModels = job.available_models
+        ?.map((model) => model.trim())
+        .filter((model) => model.length > 0) ?? [];
 
     const candidates = [
         options?.preferredModel,
         job.selected_model,
         job.default_model,
         options?.fallbackModel,
-    ].filter((model): model is string => Boolean(model && model.trim().length > 0));
+    ].map((model) => model?.trim())
+     .filter((model): model is string => Boolean(model && model.length > 0));
 
     if (availableModels.length === 0) {
         return candidates[0];
