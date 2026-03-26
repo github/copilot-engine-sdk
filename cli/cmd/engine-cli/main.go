@@ -38,6 +38,7 @@ var (
 	selectedModel            string
 	defaultModel             string
 	availableModels          []string
+	modelVendor              string
 )
 
 func main() {
@@ -98,6 +99,7 @@ func init() {
 	runCmd.Flags().StringVar(&selectedModel, "selected-model", "", "Selected model for this job")
 	runCmd.Flags().StringVar(&defaultModel, "default-model", "", "Default model for this engine")
 	runCmd.Flags().StringSliceVar(&availableModels, "available-model", nil, "Available model for this engine (repeatable)")
+	runCmd.Flags().StringVar(&modelVendor, "model-vendor", "", "Model vendor for filtering (e.g. Anthropic, OpenAI)")
 
 	_ = runCmd.MarkFlagRequired("repo")
 }
@@ -164,6 +166,7 @@ func runEngine(cmd *cobra.Command, args []string) error {
 		SelectedModel:            selectedModel,
 		DefaultModel:             defaultModel,
 		AvailableModels:          availableModels,
+		ModelVendor:              modelVendor,
 	}
 
 	prNumber := setup.PRNumber
@@ -287,6 +290,7 @@ func runEngine(cmd *cobra.Command, args []string) error {
 		env.SelectedModel = selectedModel
 		env.DefaultModel = defaultModel
 		env.AvailableModels = availableModels
+		env.ModelVendor = modelVendor
 	}
 
 	result := runner.Run(ctx, command, env, runner.Options{WorkingDir: workingDir}, runnerCallbacks)

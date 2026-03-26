@@ -493,6 +493,8 @@ export interface JobDetails {
     default_model?: string;
     /** Models the engine can choose from. Present when model selection is enabled. */
     available_models?: string[];
+    /** Model vendor for filtering (e.g. "Anthropic", "OpenAI"). Present when model selection is enabled. */
+    model_vendor?: string;
     /** Feature flags enabled for this job. */
     features?: {
         /** Whether the platform has enabled model selection for this job. */
