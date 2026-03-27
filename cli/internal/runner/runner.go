@@ -23,7 +23,6 @@ type Environment struct {
 	InferenceToken  string
 	InferenceURL    string
 	GitToken        string
-	SelectedEngine  string
 	SelectedModel   string
 	DefaultModel    string
 	AvailableModels []string
@@ -140,10 +139,6 @@ func buildEnv(env Environment, extra map[string]string) []string {
 
 	if env.InferenceURL != "" {
 		platformVars["GITHUB_INFERENCE_URL"] = env.InferenceURL
-	}
-
-	if env.SelectedEngine != "" {
-		platformVars["GITHUB_SELECTED_ENGINE"] = env.SelectedEngine
 	}
 
 	if env.SelectedModel != "" {

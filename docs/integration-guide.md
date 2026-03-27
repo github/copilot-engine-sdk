@@ -94,7 +94,6 @@ The platform injects these environment variables into the engine process at runt
 | `GITHUB_INFERENCE_TOKEN` | Yes | Token used by your inference client / SDK for model calls. |
 | `GITHUB_INFERENCE_URL` | Yes | Base URL for the inference API (e.g. Copilot API). Use this along with `GITHUB_INFERENCE_TOKEN` to make LLM inference calls. |
 | `GITHUB_GIT_TOKEN` | Yes | Token used for authenticated `git clone` / `git push`. |
-| `GITHUB_SELECTED_ENGINE` | No | Engine family selected for this run (e.g. `claude`, `codex`). Only set when model selection is enabled. |
 | `GITHUB_SELECTED_MODEL` | No | Model selected by the platform for this run. Only set when model selection is enabled. |
 | `GITHUB_DEFAULT_MODEL` | No | Default model for the selected engine. Only set when model selection is enabled. |
 | `GITHUB_AVAILABLE_MODELS` | No | JSON array of models the engine can choose from (e.g. `["claude-sonnet-4.5","claude-opus-4.1"]`). Only set when model selection is enabled. |
@@ -151,7 +150,6 @@ Headers:
   "features": {
     "model_selection": true
   },
-  "selected_engine": "claude",
   "selected_model": "claude-sonnet-4.5",
   "default_model": "claude-sonnet-4.5",
   "available_models": ["claude-sonnet-4.5", "claude-opus-4.1"],
@@ -171,7 +169,6 @@ Headers:
 | `commit_login` | Git author name for commits. |
 | `commit_email` | Git author email for commits. |
 | `features` | Optional feature flags. Currently supports `model_selection` (boolean). |
-| `selected_engine` | Engine family selected for this run (e.g. `claude` or `codex`). Present when `features.model_selection` is `true`. |
 | `selected_model` | Model selected by the platform for this run. Present when `features.model_selection` is `true`. |
 | `default_model` | Default model for the selected engine. Present when `features.model_selection` is `true`. |
 | `available_models` | List of models the engine can choose from. Present when `features.model_selection` is `true`. |

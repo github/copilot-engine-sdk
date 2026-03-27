@@ -485,8 +485,6 @@ export interface JobDetails {
     commit_login: string;
     commit_email: string;
     mcp_proxy_url?: string;
-    /** Engine family selected for this run (e.g., "claude" or "codex"). Present when model selection is enabled. */
-    selected_engine?: string;
     /** Model selected by the platform for this run. Present when model selection is enabled. */
     selected_model?: string;
     /** Default model for the selected engine. Present when model selection is enabled. */

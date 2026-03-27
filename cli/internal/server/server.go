@@ -32,7 +32,6 @@ type JobConfig struct {
 	CommitEmail              string
 	MCPProxyURL              string
 	EnableModelSelection     bool
-	SelectedEngine           string
 	SelectedModel            string
 	DefaultModel             string
 	AvailableModels          []string
@@ -215,10 +214,6 @@ func (s *MockPlatformServer) handleGetJob(w http.ResponseWriter, r *http.Request
 	if s.jobConfig.EnableModelSelection {
 		response["features"] = map[string]any{
 			"model_selection": true,
-		}
-
-		if s.jobConfig.SelectedEngine != "" {
-			response["selected_engine"] = s.jobConfig.SelectedEngine
 		}
 
 		if s.jobConfig.SelectedModel != "" {
