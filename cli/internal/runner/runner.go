@@ -26,7 +26,7 @@ type Environment struct {
 	SelectedModel   string
 	DefaultModel    string
 	AvailableModels []string
-	ModelVendor     string
+	ModelVendors    []string
 }
 
 // Callbacks contains optional callbacks for runner events.
@@ -156,8 +156,10 @@ func buildEnv(env Environment, extra map[string]string) []string {
 		}
 	}
 
-	if env.ModelVendor != "" {
-		platformVars["GITHUB_MODEL_VENDOR"] = env.ModelVendor
+	if len(env.ModelVendors) > 0 {
+		if encoded, err := json.Marshal(env.ModelVendors); err == nil {
+			platformVars["GITHUB_MODEL_VENDORS"] = string(encoded)
+		}
 	}
 
 	for k, v := range platformVars {

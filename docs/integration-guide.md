@@ -78,9 +78,11 @@ author: 'Your Name'
 # The platform executes this command directly — no implicit runtime setup.
 entrypoint: 'node --enable-source-maps dist/index.js'
 
-# Optional: Specify the model vendor for model selection (e.g. 'Anthropic', 'OpenAI').
-# When set, the platform uses this to determine the available models for the engine.
-vendor: 'Anthropic'
+# Optional: Specify the model vendors for model selection (e.g. 'Anthropic', 'OpenAI').
+# When set, the platform uses these to determine the available models for the engine.
+vendors:
+  - 'Anthropic'
+  - 'OpenAI'
 ```
 
 > **Note:** This is not a GitHub Action. The platform reads `entrypoint` from `engine.yaml` and runs it directly. All paths in the entrypoint are resolved relative to the engine's root directory.
@@ -101,7 +103,7 @@ The platform injects these environment variables into the engine process at runt
 | `GITHUB_SELECTED_MODEL` | No | Model selected by the platform for this run. Only set when model selection is enabled. |
 | `GITHUB_DEFAULT_MODEL` | No | Default model for the selected engine. Only set when model selection is enabled. |
 | `GITHUB_AVAILABLE_MODELS` | No | JSON array of models the engine can choose from (e.g. `["claude-sonnet-4.5","claude-opus-4.1"]`). Only set when model selection is enabled. |
-| `GITHUB_MODEL_VENDOR` | No | Model vendor as defined by the `vendor` field in `engine.yaml` (e.g. `Anthropic`, `OpenAI`). Only set when model selection is enabled. |
+| `GITHUB_MODEL_VENDORS` | No | JSON array of model vendors as defined by the `vendors` field in `engine.yaml` (e.g. `["Anthropic","OpenAI"]`). Only set when model selection is enabled. |
 
 ## Step 2: Fetch Job Details
 
@@ -157,7 +159,7 @@ Headers:
   "selected_model": "claude-sonnet-4.5",
   "default_model": "claude-sonnet-4.5",
   "available_models": ["claude-sonnet-4.5", "claude-opus-4.1"],
-  "model_vendor": "Anthropic",
+  "model_vendors": ["Anthropic"],
   "mcp_proxy_url": "http://127.0.0.1:2301"
 }
 ```
@@ -176,7 +178,7 @@ Headers:
 | `selected_model` | Model selected by the platform for this run. Present when `features.model_selection` is `true`. |
 | `default_model` | Default model for the selected engine. Present when `features.model_selection` is `true`. |
 | `available_models` | List of models the engine can choose from. Present when `features.model_selection` is `true`. |
-| `model_vendor` | Model vendor as defined by the `vendor` field in `engine.yaml` (e.g. `Anthropic`, `OpenAI`). Present when `features.model_selection` is `true`. |
+| `model_vendors` | List of model vendors as defined by the `vendors` field in `engine.yaml` (e.g. `["Anthropic", "OpenAI"]`). Present when `features.model_selection` is `true`. |
 | `mcp_proxy_url` | Optional URL of the MCP proxy server. When present, use it to discover user-provided MCP servers. See [User-Provided MCP Servers](#user-provided-mcp-servers). |
 
 Use `GITHUB_INFERENCE_TOKEN` for model calls and `GITHUB_GIT_TOKEN` for git operations; those are bootstrap action inputs, not job response fields.

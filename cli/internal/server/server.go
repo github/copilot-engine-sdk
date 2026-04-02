@@ -35,7 +35,7 @@ type JobConfig struct {
 	SelectedModel            string
 	DefaultModel             string
 	AvailableModels          []string
-	ModelVendor              string
+	ModelVendors             []string
 }
 
 // ProgressEvent represents a progress event received from an engine.
@@ -228,8 +228,8 @@ func (s *MockPlatformServer) handleGetJob(w http.ResponseWriter, r *http.Request
 			response["available_models"] = s.jobConfig.AvailableModels
 		}
 
-		if s.jobConfig.ModelVendor != "" {
-			response["model_vendor"] = s.jobConfig.ModelVendor
+		if len(s.jobConfig.ModelVendors) > 0 {
+			response["model_vendors"] = s.jobConfig.ModelVendors
 		}
 	}
 
