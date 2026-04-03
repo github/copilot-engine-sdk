@@ -567,9 +567,10 @@ export function resolveSelectedModel(
     }
 
     // Warn when the platform-selected model is not in the available list
-    if (job.selected_model && !availableModels.includes(job.selected_model)) {
+    const trimmedSelectedModel = job.selected_model?.trim();
+    if (trimmedSelectedModel && !availableModels.includes(trimmedSelectedModel)) {
         console.warn(
-            `resolveSelectedModel: selected_model "${job.selected_model}" is not in available_models [${availableModels.join(", ")}]. ` +
+            `resolveSelectedModel: selected_model "${trimmedSelectedModel}" is not in available_models [${availableModels.join(", ")}]. ` +
             `Falling back to "${availableModels[0]}".`
         );
     }
