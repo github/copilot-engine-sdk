@@ -21,6 +21,9 @@ jobs:
   publish:
     runs-on: ubuntu-latest
     environment: npm-publish
+    concurrency:
+      group: publish-npm
+      cancel-in-progress: false
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -32,6 +35,7 @@ jobs:
         with:
           node-version: 22
           registry-url: "https://registry.npmjs.org"
+          cache: npm
 
       - name: Get current npm version
         id: current_version
@@ -43,31 +47,18 @@ jobs:
 
       - name: Calculate next version
         id: next_version
-        env:
-          CURRENT: ${{ steps.current_version.outputs.version }}
-          VERSION_TYPE: ${{ inputs.version_type }}
         run: |
-          IFS='.' read -r MAJOR MINOR PATCH <<< "$CURRENT"
-
-          case "$VERSION_TYPE" in
-            major)
-              MAJOR=$((MAJOR + 1))
-              MINOR=0
-              PATCH=0
-              ;;
-            minor)
-              MINOR=$((MINOR + 1))
-              PATCH=0
-              ;;
-            patch)
-              PATCH=$((PATCH + 1))
-              ;;
-          esac
-
-          NEXT_VERSION="${MAJOR}.${MINOR}.${PATCH}"
+          CURRENT="${{ steps.current_version.outputs.version }}"
+          NEXT_VERSION=$(npx --yes semver "$CURRENT" -i "$VERSION_TYPE")
+          if [ -z "$NEXT_VERSION" ]; then
+            echo "Failed to calculate next version from $CURRENT using increment $VERSION_TYPE" >&2
+            exit 1
+          fi
           echo "version=$NEXT_VERSION" >> "$GITHUB_OUTPUT"
           echo "Next version: $NEXT_VERSION (incremented $VERSION_TYPE from $CURRENT)"
           echo "- Next version: \`$NEXT_VERSION\` (incremented $VERSION_TYPE from \`$CURRENT\`)" >> "$GITHUB_STEP_SUMMARY"
+        env:
+          VERSION_TYPE: ${{ inputs.version_type }}
 
       - name: Set package version
         env:
@@ -89,7 +80,7 @@ jobs:
       - name: Determine previous release tag
         id: previous_tag
         run: |
-          PREVIOUS_TAG=$(gh release list --limit 1 --json tagName --jq '.[0].tagName // empty' 2>/dev/null || echo "")
+          PREVIOUS_TAG=$(gh release list --limit 1 --exclude-drafts --exclude-pre-releases --json tagName --jq '.[0].tagName // empty' 2>/dev/null || echo "")
           echo "tag=$PREVIOUS_TAG" >> "$GITHUB_OUTPUT"
           if [ -n "$PREVIOUS_TAG" ]; then
             echo "Previous release tag: $PREVIOUS_TAG"
