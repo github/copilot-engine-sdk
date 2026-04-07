@@ -1,0 +1,114 @@
+name: Publish to npm
+
+on:
+  workflow_dispatch:
+    inputs:
+      version_type:
+        description: "Version increment type"
+        required: true
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
+        default: patch
+
+permissions:
+  contents: write
+  id-token: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    environment: npm-publish
+    concurrency:
+      group: publish-npm
+      cancel-in-progress: false
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: "https://registry.npmjs.org"
+          cache: npm
+
+      - name: Get current npm version
+        id: current_version
+        run: |
+          CURRENT_VERSION=$(npm view @github/copilot-engine-sdk version 2>/dev/null || echo "0.0.0")
+          echo "version=$CURRENT_VERSION" >> "$GITHUB_OUTPUT"
+          echo "Current published version: $CURRENT_VERSION"
+          echo "- Current published version: \`$CURRENT_VERSION\`" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Calculate next version
+        id: next_version
+        run: |
+          CURRENT="${{ steps.current_version.outputs.version }}"
+          NEXT_VERSION=$(npx --yes semver "$CURRENT" -i "$VERSION_TYPE")
+          if [ -z "$NEXT_VERSION" ]; then
+            echo "Failed to calculate next version from $CURRENT using increment $VERSION_TYPE" >&2
+            exit 1
+          fi
+          echo "version=$NEXT_VERSION" >> "$GITHUB_OUTPUT"
+          echo "Next version: $NEXT_VERSION (incremented $VERSION_TYPE from $CURRENT)"
+          echo "- Next version: \`$NEXT_VERSION\` (incremented $VERSION_TYPE from \`$CURRENT\`)" >> "$GITHUB_STEP_SUMMARY"
+        env:
+          VERSION_TYPE: ${{ inputs.version_type }}
+
+      - name: Set package version
+        env:
+          VERSION: ${{ steps.next_version.outputs.version }}
+        run: npm version "$VERSION" --no-git-tag-version
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      - name: Create npm tarball
+        run: npm pack
+
+      - name: Publish to npm
+        run: npm publish --access public 2>&1 | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Determine previous release tag
+        id: previous_tag
+        run: |
+          PREVIOUS_TAG=$(gh release list --limit 1 --exclude-drafts --exclude-pre-releases --json tagName --jq '.[0].tagName // empty' 2>/dev/null || echo "")
+          echo "tag=$PREVIOUS_TAG" >> "$GITHUB_OUTPUT"
+          if [ -n "$PREVIOUS_TAG" ]; then
+            echo "Previous release tag: $PREVIOUS_TAG"
+            echo "- Previous release tag: \`$PREVIOUS_TAG\`" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "No previous release found"
+            echo "- No previous release found" >> "$GITHUB_STEP_SUMMARY"
+          fi
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      - name: Create GitHub release
+        env:
+          VERSION: ${{ steps.next_version.outputs.version }}
+          PREVIOUS_TAG: ${{ steps.previous_tag.outputs.tag }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="v${VERSION}"
+
+          RELEASE_ARGS=(
+            "$TAG"
+            --title "$TAG"
+            --generate-notes
+            ./*.tgz
+          )
+
+          if [ -n "$PREVIOUS_TAG" ]; then
+            RELEASE_ARGS+=(--notes-start-tag "$PREVIOUS_TAG")
+          fi
+
+          gh release create "${RELEASE_ARGS[@]}" 2>&1 | tee -a "$GITHUB_STEP_SUMMARY"
