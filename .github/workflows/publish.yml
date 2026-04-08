@@ -111,4 +111,4 @@ jobs:
             RELEASE_ARGS+=(--notes-start-tag "$PREVIOUS_TAG")
           fi
 
-          gh release create "${RELEASE_ARGS[@]}" 2>&1 >> "$GITHUB_STEP_SUMMARY"
+          gh release create "${RELEASE_ARGS[@]}" >> "$GITHUB_STEP_SUMMARY" 2>&1
