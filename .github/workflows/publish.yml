@@ -33,7 +33,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 24
           registry-url: "https://registry.npmjs.org"
           cache: npm
 
@@ -75,7 +75,7 @@ jobs:
         run: npm pack
 
       - name: Publish to npm
-        run: npm publish --access public 2>&1 | tee -a "$GITHUB_STEP_SUMMARY"
+        run: npm publish --access public
 
       - name: Determine previous release tag
         id: previous_tag
@@ -111,4 +111,4 @@ jobs:
             RELEASE_ARGS+=(--notes-start-tag "$PREVIOUS_TAG")
           fi
 
-          gh release create "${RELEASE_ARGS[@]}" 2>&1 | tee -a "$GITHUB_STEP_SUMMARY"
+          gh release create "${RELEASE_ARGS[@]}" >> "$GITHUB_STEP_SUMMARY" 2>&1
