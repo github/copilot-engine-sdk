@@ -31,6 +31,11 @@ type JobConfig struct {
 	CommitLogin              string
 	CommitEmail              string
 	MCPProxyURL              string
+	EnableModelSelection     bool
+	SelectedModel            string
+	DefaultModel             string
+	AvailableModels          []string
+	ModelVendors             []string
 }
 
 // ProgressEvent represents a progress event received from an engine.
@@ -129,8 +134,8 @@ func (s *MockPlatformServer) Stop(ctx context.Context) error {
 }
 
 var (
-	getJobRegex      = regexp.MustCompile(`^/agent/jobs/([^/]+)$`)
-	progressRegex    = regexp.MustCompile(`^/agent/jobs/([^/]+)/progress$`)
+	getJobRegex   = regexp.MustCompile(`^/agent/jobs/([^/]+)$`)
+	progressRegex = regexp.MustCompile(`^/agent/jobs/([^/]+)/progress$`)
 )
 
 func (s *MockPlatformServer) handleRequest(w http.ResponseWriter, r *http.Request) {
@@ -204,6 +209,28 @@ func (s *MockPlatformServer) handleGetJob(w http.ResponseWriter, r *http.Request
 
 	if s.jobConfig.MCPProxyURL != "" {
 		response["mcp_proxy_url"] = s.jobConfig.MCPProxyURL
+	}
+
+	if s.jobConfig.EnableModelSelection {
+		response["features"] = map[string]any{
+			"model_selection": true,
+		}
+
+		if s.jobConfig.SelectedModel != "" {
+			response["selected_model"] = s.jobConfig.SelectedModel
+		}
+
+		if s.jobConfig.DefaultModel != "" {
+			response["default_model"] = s.jobConfig.DefaultModel
+		}
+
+		if len(s.jobConfig.AvailableModels) > 0 {
+			response["available_models"] = s.jobConfig.AvailableModels
+		}
+
+		if len(s.jobConfig.ModelVendors) > 0 {
+			response["model_vendors"] = s.jobConfig.ModelVendors
+		}
 	}
 
 	if s.callbacks.OnJobFetched != nil {

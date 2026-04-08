@@ -33,6 +33,11 @@ var (
 	commitLogin              string
 	commitEmail              string
 	assignmentID             string
+	enableModelSelection     bool
+	selectedModel            string
+	defaultModel             string
+	availableModels          []string
+	modelVendors             []string
 )
 
 func main() {
@@ -88,6 +93,11 @@ func init() {
 	runCmd.Flags().StringVar(&commitLogin, "commit-login", "engine-cli-user", "Git author name for commits")
 	runCmd.Flags().StringVar(&commitEmail, "commit-email", "engine-cli@users.noreply.github.com", "Git author email for commits")
 	runCmd.Flags().StringVar(&assignmentID, "assignment-id", "", "Assignment ID to enable cross-run history persistence")
+	runCmd.Flags().BoolVar(&enableModelSelection, "enable-model-selection", false, "Enable the model selection feature flag in the job response")
+	runCmd.Flags().StringVar(&selectedModel, "selected-model", "", "Selected model for this job")
+	runCmd.Flags().StringVar(&defaultModel, "default-model", "", "Default model for this engine")
+	runCmd.Flags().StringSliceVar(&availableModels, "available-model", nil, "Available model for this engine (repeatable)")
+	runCmd.Flags().StringSliceVar(&modelVendors, "model-vendor", nil, "Model vendor for filtering (repeatable, e.g. Anthropic, OpenAI)")
 
 	_ = runCmd.MarkFlagRequired("repo")
 }
@@ -149,6 +159,11 @@ func runEngine(cmd *cobra.Command, args []string) error {
 		BranchName:               branchName,
 		CommitLogin:              commitLogin,
 		CommitEmail:              commitEmail,
+		EnableModelSelection:     enableModelSelection,
+		SelectedModel:            selectedModel,
+		DefaultModel:             defaultModel,
+		AvailableModels:          availableModels,
+		ModelVendors:             modelVendors,
 	}
 
 	prNumber := setup.PRNumber
@@ -265,6 +280,13 @@ func runEngine(cmd *cobra.Command, args []string) error {
 		InferenceToken: githubToken,
 		InferenceURL:   inferenceURL,
 		GitToken:       githubToken,
+	}
+
+	if enableModelSelection {
+		env.SelectedModel = selectedModel
+		env.DefaultModel = defaultModel
+		env.AvailableModels = availableModels
+		env.ModelVendors = modelVendors
 	}
 
 	result := runner.Run(ctx, command, env, runner.Options{WorkingDir: workingDir}, runnerCallbacks)

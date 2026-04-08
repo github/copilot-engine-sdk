@@ -75,6 +75,12 @@ author: 'Your Name'
 # The fully qualified command to run the engine.
 # The platform executes this command directly — no implicit runtime setup.
 entrypoint: 'node --enable-source-maps dist/index.js'
+
+# Optional: Specify the model vendors for model selection (e.g. 'Anthropic', 'OpenAI').
+# When set, the platform uses these to determine the available models for the engine.
+vendors:
+  - 'Anthropic'
+  - 'OpenAI'
 ```
 
 > **Note:** This is not a GitHub Action. The platform reads `entrypoint` from `engine.yaml` and runs it directly. All paths in the entrypoint are resolved relative to the engine's root directory.
@@ -92,6 +98,10 @@ The platform injects these environment variables into the engine process at runt
 | `GITHUB_INFERENCE_TOKEN` | Yes | Token used by your inference client / SDK for model calls. |
 | `GITHUB_INFERENCE_URL` | Yes | Base URL for the inference API (e.g. Copilot API). Use this along with `GITHUB_INFERENCE_TOKEN` to make LLM inference calls. |
 | `GITHUB_GIT_TOKEN` | Yes | Token used for authenticated `git clone` / `git push`. |
+| `GITHUB_SELECTED_MODEL` | No | Model selected by the platform for this run. Only set when model selection is enabled. |
+| `GITHUB_DEFAULT_MODEL` | No | Default model for the selected engine. Only set when model selection is enabled. |
+| `GITHUB_AVAILABLE_MODELS` | No | JSON array of models the engine can choose from (e.g. `["claude-sonnet-4.5","claude-opus-4.1"]`). Only set when model selection is enabled. |
+| `GITHUB_MODEL_VENDORS` | No | JSON array of model vendors as defined by the `vendors` field in `engine.yaml` (e.g. `["Anthropic","OpenAI"]`). Only set when model selection is enabled. |
 
 ## Step 2: Fetch Job Details
 
@@ -141,6 +151,13 @@ Headers:
   "branch_name": "copilot/fix-123",
   "commit_login": "copilot-bot",
   "commit_email": "copilot-bot@users.noreply.github.com",
+  "features": {
+    "model_selection": true
+  },
+  "selected_model": "claude-sonnet-4.5",
+  "default_model": "claude-sonnet-4.5",
+  "available_models": ["claude-sonnet-4.5", "claude-opus-4.1"],
+  "model_vendors": ["Anthropic"],
   "mcp_proxy_url": "http://127.0.0.1:2301"
 }
 ```
@@ -155,6 +172,11 @@ Headers:
 | `branch_name` | Branch to checkout or create. |
 | `commit_login` | Git author name for commits. |
 | `commit_email` | Git author email for commits. |
+| `features` | Optional feature flags. Currently supports `model_selection` (boolean). |
+| `selected_model` | Model selected by the platform for this run. Present when `features.model_selection` is `true`. |
+| `default_model` | Default model for the selected engine. Present when `features.model_selection` is `true`. |
+| `available_models` | List of models the engine can choose from. Present when `features.model_selection` is `true`. |
+| `model_vendors` | List of model vendors as defined by the `vendors` field in `engine.yaml` (e.g. `["Anthropic", "OpenAI"]`). Present when `features.model_selection` is `true`. |
 | `mcp_proxy_url` | Optional URL of the MCP proxy server. When present, use it to discover user-provided MCP servers. See [User-Provided MCP Servers](#user-provided-mcp-servers). |
 
 Use `GITHUB_INFERENCE_TOKEN` for model calls and `GITHUB_GIT_TOKEN` for git operations; those are bootstrap action inputs, not job response fields.
@@ -823,7 +845,7 @@ flowchart LR
 ```
 
 ```typescript
-import { PlatformClient, cloneRepo, finalizeChanges } from "@github/copilot-engine-sdk";
+import { PlatformClient, cloneRepo, finalizeChanges, resolveSelectedModel } from "@github/copilot-engine-sdk";
 import { CopilotClient } from "@github/copilot-sdk";
 
 async function main() {
@@ -860,6 +882,9 @@ async function main() {
 
   // 5. Build system message based on action type
   const systemMessage = buildSystemMessage(job.action, job);
+  const model = resolveSelectedModel(job, {
+    fallbackModel: "claude-sonnet-4.5",
+  }) ?? "claude-sonnet-4.5";
 
   // 6. Run your agentic loop with your inference client
   const client = new CopilotClient({
@@ -870,7 +895,7 @@ async function main() {
   const mcpServerPath = require.resolve("@github/copilot-engine-sdk/mcp-server");
 
   const session = await client.createSession({
-    model: "claude-sonnet-4.5",
+    model,
     systemMessage: { content: systemMessage },
     mcpServers: {
       "engine-tools": {
