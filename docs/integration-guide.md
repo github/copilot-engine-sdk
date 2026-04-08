@@ -6,8 +6,6 @@
 
 This guide walks you through building a custom **engine** — a program that receives a coding task from the Copilot platform, runs an agentic loop against a repository, and streams progress back to users in real time.
 
-> **📦 Reference Implementation** — See [`github/agent-platform-engine-example`](https://github.com/github/agent-platform-engine-example) for a complete working engine built with this SDK.
-
 ## What Is an Engine?
 
 An engine is a program that the platform executes when a user triggers a coding task — such as assigning Copilot to an issue, requesting changes on a PR, or invoking a task via the API. The platform creates a **job**, launches your engine in a secure runner environment, and your engine does the work.
@@ -920,6 +918,69 @@ async function main() {
   finalizeChanges(repoLocation, "Finalize changes");
 }
 ```
+
+## Releasing Your Engine
+
+Engines are consumed via **GitHub Releases** rather than by cloning and building the source repository. Each release should contain a self-contained tarball with everything the platform needs to run your engine: the `engine.yaml` definition and your compiled build output.
+
+### Creating a Release
+
+Tag your commit and push the tag — a GitHub Actions workflow builds the project and publishes the release automatically:
+
+```bash
+git tag v1.0.0
+git push origin v1.0.0
+```
+
+### Release Workflow
+
+Add a workflow that triggers on version tags, builds your engine, and attaches the artifact to a GitHub Release.
+
+> **Note:** The example below is for a Node.js/TypeScript engine. If your engine uses a different runtime (Python, Go, Rust, etc.), substitute the appropriate setup, dependency installation, and build steps, and adjust the artifact paths to match your compiled output.
+
+```yaml
+# .github/workflows/release.yml
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - run: npm ci
+
+      - run: npm run build
+
+      - name: Create release tarball
+        run: tar -czf engine.tar.gz engine.yaml dist/
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: engine.tar.gz
+          generate_release_notes: true
+```
+
+### What to Include in the Release
+
+Your release artifact must include `engine.yaml` and everything it references. The `entrypoint` in `engine.yaml` is resolved as a relative path, so any files or directories it points to need to be in the tarball alongside it. For example, if your entrypoint is `node dist/index.js`, then `dist/index.js` (and any of its runtime dependencies) must be present.
+
+The release should be self-contained — the platform should be able to extract it and run the entrypoint without cloning the repo, installing dependencies, or building from source. This means your build output must include all runtime dependencies. For Node.js engines, either use a bundler (e.g., esbuild, webpack, or ncc) to produce a single self-contained file, or include the `node_modules` directory in the tarball. Other runtimes should follow their equivalent strategy — for example, Go and Rust engines can compile to a static binary, while Python engines might vendor dependencies or include a virtual environment.
+
 
 ## Architecture Notes
 
