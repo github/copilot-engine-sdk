@@ -55,6 +55,30 @@ function log(message: string, data?: unknown): void {
 // Configuration
 // =============================================================================
 
+/**
+ * Memory tools configuration for engines that want to use Copilot Memory.
+ * When provided, memory tools (inject_memories, store_memory, vote_memory)
+ * are registered on the MCP server alongside engine tools.
+ */
+export interface EngineMemoryConfig {
+    /** CAPI token for authentication. */
+    token: string;
+    /** Integration ID (e.g., "copilot-swe-agent"). */
+    integrationId: string;
+    /** Scope of memory operations. */
+    scope: "repository" | "user";
+    /** Repository owner (required for repository scope). */
+    owner?: string;
+    /** Repository name (required for repository scope). */
+    repo?: string;
+    /** Agent name for telemetry. */
+    agent?: string;
+    /** Optional interaction/session ID. */
+    interactionId?: string;
+    /** Optional base model name. */
+    baseModel?: string;
+}
+
 export interface EngineMcpServerConfig {
     /** Working directory for git operations */
     workingDir: string;
@@ -64,6 +88,11 @@ export interface EngineMcpServerConfig {
     platformClient?: PlatformClient;
     /** Path to the MCP server log file (default: /tmp/mcp-server.log) */
     logFile?: string;
+    /**
+     * Memory tools configuration. When provided, memory tools from
+     * @github/copilot-agentic-tools are registered on this server.
+     */
+    memory?: EngineMemoryConfig;
 }
 
 // =============================================================================
@@ -271,6 +300,160 @@ export function createEngineMcpServer(config: EngineMcpServerConfig): McpServer 
 }
 
 /**
+ * Creates an MCP server with engine tools and optional memory tools.
+ * This is an async version that supports dynamic loading of memory tools.
+ *
+ * @param config - Configuration for the MCP server
+ * @returns Promise resolving to the configured MCP server instance
+ */
+export async function createEngineMcpServerAsync(config: EngineMcpServerConfig): Promise<McpServer> {
+    const server = createEngineMcpServer(config);
+
+    // Register memory tools if configured
+    if (config.memory) {
+        await registerMemoryTools(server, config.memory);
+    }
+
+    return server;
+}
+
+/**
+ * Registers memory tools from @github/copilot-agentic-tools on an MCP server.
+ * This dynamically imports the package to keep it optional.
+ *
+ * @param server - The MCP server to register tools on
+ * @param memoryConfig - Memory tools configuration
+ */
+async function registerMemoryTools(server: McpServer, memoryConfig: EngineMemoryConfig): Promise<void> {
+    try {
+        // Dynamic import to keep @github/copilot-agentic-tools optional
+        const {
+            fetchMemoryPrompts,
+            storeMemory,
+            voteMemory,
+        } = await import("@github/copilot-agentic-tools/memory");
+        const {
+            INJECT_MEMORIES_TOOL_NAME,
+            STORE_MEMORY_TOOL_NAME,
+            VOTE_MEMORY_TOOL_NAME,
+        } = await import("@github/copilot-agentic-tools/mcp");
+
+        const { scope, owner, repo, agent = "engine", interactionId, baseModel, token, integrationId } = memoryConfig;
+
+        // Validate repository scope config
+        if (scope === "repository" && (!owner || !repo)) {
+            throw new Error("Repository scope requires owner and repo to be specified");
+        }
+
+        // Build API options
+        const baseApiOptions = {
+            token,
+            integrationId,
+            logger: {
+                info: (msg: string) => log(`[memory] ${msg}`),
+                error: (msg: string) => log(`[memory] ERROR: ${msg}`),
+            },
+        };
+
+        const apiOptions = scope === "user"
+            ? { ...baseApiOptions, scope: "user" as const }
+            : { ...baseApiOptions, scope: "repository" as const, owner: owner!, repo: repo! };
+
+        // Register inject_memories tool
+        server.tool(
+            INJECT_MEMORIES_TOOL_NAME,
+            "Inject memories from previous sessions into the current context",
+            {},
+            async () => {
+                try {
+                    const prompts = await fetchMemoryPrompts(apiOptions);
+                    if (prompts?.memoriesContext?.prompt) {
+                        const count = prompts.memoriesContext.memoriesCount ?? 0;
+                        log(`inject_memories: Retrieved ${count} memories`);
+                        return { content: [{ type: "text" as const, text: prompts.memoriesContext.prompt }] };
+                    }
+                    log("inject_memories: No memories available");
+                    return { content: [{ type: "text" as const, text: "No memories available for this repository." }] };
+                } catch (error) {
+                    const errorMessage = error instanceof Error ? error.message : String(error);
+                    log(`inject_memories failed: ${errorMessage}`);
+                    return { content: [{ type: "text" as const, text: "No memories available (loading failed)." }] };
+                }
+            },
+        );
+
+        // Register store_memory tool
+        const storeMemorySchema = z.object({
+            subject: z.string().describe("Brief title for the memory (e.g., 'Code style preference')"),
+            fact: z.string().describe("The information to store as a memory"),
+            citations: z.array(z.string()).describe("File paths that support this memory"),
+            reason: z.string().describe("Why this memory is being stored"),
+        });
+
+        server.tool(
+            STORE_MEMORY_TOOL_NAME,
+            "Store a new memory about the codebase or user preferences",
+            storeMemorySchema.shape,
+            async (params: z.infer<typeof storeMemorySchema>) => {
+                try {
+                    const result = await storeMemory(
+                        { subject: params.subject, fact: params.fact, citations: params.citations, reason: params.reason },
+                        { ...apiOptions, agent, interactionId, baseModel },
+                    );
+                    if (result.success) {
+                        log(`store_memory: Stored memory "${params.subject}"`);
+                        return { content: [{ type: "text" as const, text: `Memory stored: ${params.subject}` }] };
+                    }
+                    log(`store_memory failed: ${result.error}`);
+                    return { content: [{ type: "text" as const, text: `Failed to store memory: ${result.error}` }], isError: true };
+                } catch (error) {
+                    const errorMessage = error instanceof Error ? error.message : String(error);
+                    log(`store_memory error: ${errorMessage}`);
+                    return { content: [{ type: "text" as const, text: `Error storing memory: ${errorMessage}` }], isError: true };
+                }
+            },
+        );
+
+        // Register vote_memory tool
+        const voteMemorySchema = z.object({
+            fact: z.string().describe("The fact/content of the memory to vote on"),
+            direction: z.enum(["upvote", "downvote"]).describe("Vote direction"),
+            reason: z.string().describe("Why you are voting this way"),
+        });
+
+        server.tool(
+            VOTE_MEMORY_TOOL_NAME,
+            "Vote on a memory to improve its ranking",
+            voteMemorySchema.shape,
+            async (params: z.infer<typeof voteMemorySchema>) => {
+                try {
+                    const result = await voteMemory(
+                        { fact: params.fact, direction: params.direction, reason: params.reason },
+                        { ...apiOptions, agent, interactionId, baseModel },
+                    );
+                    if (result.success) {
+                        log(`vote_memory: Voted ${params.direction} on memory`);
+                        return { content: [{ type: "text" as const, text: `Vote recorded: ${params.direction}` }] };
+                    }
+                    log(`vote_memory failed: ${result.error}`);
+                    return { content: [{ type: "text" as const, text: `Failed to vote: ${result.error}` }], isError: true };
+                } catch (error) {
+                    const errorMessage = error instanceof Error ? error.message : String(error);
+                    log(`vote_memory error: ${errorMessage}`);
+                    return { content: [{ type: "text" as const, text: `Error voting: ${errorMessage}` }], isError: true };
+                }
+            },
+        );
+
+        log("Memory tools registered", { scope, hasOwnerRepo: !!(owner && repo) });
+    } catch (error) {
+        const errorMessage = error instanceof Error ? error.message : String(error);
+        log(`Failed to register memory tools: ${errorMessage}. Install @github/copilot-agentic-tools to enable.`);
+        // Don't throw - memory tools are optional
+    }
+}
+
+/**
  * Starts the MCP server using STDIO transport.
  * This is used when running the server as a standalone process.
  *
@@ -322,20 +505,45 @@ async function main(): Promise<void> {
         });
     }
 
+    // Build memory config from environment variables (optional)
+    let memory: EngineMemoryConfig | undefined;
+    const memoryToken = process.env.COPILOT_TOKEN;
+    const memoryIntegrationId = process.env.COPILOT_INTEGRATION_ID;
+    if (memoryToken && memoryIntegrationId) {
+        const owner = process.env.GITHUB_OWNER;
+        const repo = process.env.GITHUB_REPO;
+        const scope: "repository" | "user" = owner && repo ? "repository" : "user";
+        memory = {
+            token: memoryToken,
+            integrationId: memoryIntegrationId,
+            scope,
+            owner,
+            repo,
+            agent: process.env.AGENT_NAME ?? "engine",
+            interactionId: process.env.INTERACTION_ID,
+            baseModel: process.env.BASE_MODEL,
+        };
+        log("Memory tools enabled", { scope, hasOwnerRepo: !!(owner && repo) });
+    } else {
+        log("Memory tools disabled (COPILOT_TOKEN or COPILOT_INTEGRATION_ID not set)");
+    }
+
     const config: EngineMcpServerConfig = {
         workingDir,
         push: true,
         platformClient,
+        memory,
     };
 
-    const server = createEngineMcpServer(config);
+    // Use async version to support memory tool registration
+    const server = await createEngineMcpServerAsync(config);
     await startEngineMcpServer(server);
 
     log("MCP server ready");
 }
 
-// Run if executed directly (check filename to avoid firing when bundled into another entry)
-if (process.argv[1]?.endsWith("mcp-server.js")) {
+// Run if executed directly (matches both mcp-server.js and mcp-server.bundled.js)
+if (process.argv[1]?.includes("mcp-server")) {
     main().catch((error) => {
         log("FATAL", { error: String(error) });
         console.error("Failed to start MCP server:", error);
