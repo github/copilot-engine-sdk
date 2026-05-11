@@ -407,10 +407,23 @@ export class PlatformClient {
     /**
      * Fetches progress records from the platform, optionally filtered by
      * namespace and including history from previous jobs.
+     *
+     * @param options.namespace Restrict results to a single namespace.
+     * @param options.history When true, walk back to previous jobs in the
+     *   same assignment for cross-job context. The platform's default
+     *   walk-back returns only the most recent previous job's records.
+     * @param options.sessionId When set together with `history: true`,
+     *   scope the walk-back to a specific session id rather than the
+     *   default newest-job-only behavior. Used by resume-after-permission-
+     *   timeout flows where the target session may not be the most recent
+     *   in the assignment, so an unrelated newer sibling job would
+     *   otherwise shadow the session's progress snapshot. Empty/undefined
+     *   preserves the existing newest-job-only behavior.
      */
     async fetchProgress(options?: {
         namespace?: string;
         history?: boolean;
+        sessionId?: string;
     }): Promise<ProgressRecord[] | null> {
         const url = new URL(`jobs/${this._jobId}/progress`, this.baseUrl);
         if (options?.namespace) {
@@ -418,6 +431,9 @@ export class PlatformClient {
         }
         if (options?.history) {
             url.searchParams.set("history", "true");
+        }
+        if (options?.sessionId) {
+            url.searchParams.set("session_id", options.sessionId);
         }
 
         try {
