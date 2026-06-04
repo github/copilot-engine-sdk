@@ -87,6 +87,7 @@ export interface AssistantMessageEvent {
         content: string;
         tool_calls?: ToolCall[];
         reasoning_text?: string;
+        copilot_annotations?: unknown;
     };
 }
 

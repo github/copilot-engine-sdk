@@ -36,6 +36,7 @@ export interface CreateAssistantMessageOptions {
     content: string;
     toolCalls?: Array<{ id: string; name: string; arguments: string }>;
     reasoningText?: string;
+    copilotAnnotations?: unknown;
 }
 
 export interface CreateToolMessageOptions {
@@ -105,7 +106,7 @@ export function createModelCallFailureEvent(options: CreateModelCallFailureOptio
  * Records the assistant's response content, including any tool calls it wants to make.
  */
 export function createAssistantMessageEvent(options: CreateAssistantMessageOptions): AssistantMessageEvent {
-    const { turn, callId, content, toolCalls, reasoningText } = options;
+    const { turn, callId, content, toolCalls, reasoningText, copilotAnnotations } = options;
 
     const formattedToolCalls: ToolCall[] | undefined = toolCalls?.map((tc, index) => ({
         id: tc.id,
@@ -126,6 +127,7 @@ export function createAssistantMessageEvent(options: CreateAssistantMessageOptio
             content,
             tool_calls: formattedToolCalls,
             reasoning_text: reasoningText,
+            copilot_annotations: copilotAnnotations,
         },
     };
 }
