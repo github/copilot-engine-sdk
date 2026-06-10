@@ -89,6 +89,11 @@ export interface CommitAndPushResult {
  */
 export function cloneRepo(options: CloneRepoOptions): string {
     const { serverUrl, repository, gitToken, credentialHelperEnvVar, excludeRepoSubfolder, branchName, commitLogin, commitEmail } = options;
+
+    if (credentialHelperEnvVar && !/^[A-Za-z_][A-Za-z0-9_]*$/.test(credentialHelperEnvVar)) {
+        throw new Error(`Invalid credentialHelperEnvVar: must be a valid environment variable name (letters, digits, underscores; cannot start with a digit)`);
+    }
+
     const cloneDir = options.cloneDir ?? DEFAULT_CLONE_DIR;
     const repoLocation = excludeRepoSubfolder ? cloneDir : `${cloneDir}/${repository}`;
 
