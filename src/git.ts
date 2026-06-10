@@ -55,6 +55,10 @@ export interface CloneRepoOptions {
     commitEmail: string;
     /** Base directory for cloning (default: /tmp/workspace) */
     cloneDir?: string;
+    /** Whether to exclude the repository subfolder (owner/repo) when cloning (default: false) */
+    excludeRepoSubfolder?: boolean;
+    /** If set, use an environment variable name for Git credential helper rather than embedding the token in the config (default: undefined) */
+    credentialHelperEnvVar?: string;
 }
 
 /**
@@ -84,9 +88,9 @@ export interface CommitAndPushResult {
  * @returns The local path where the repository was cloned
  */
 export function cloneRepo(options: CloneRepoOptions): string {
-    const { serverUrl, repository, gitToken, branchName, commitLogin, commitEmail } = options;
+    const { serverUrl, repository, gitToken, credentialHelperEnvVar, excludeRepoSubfolder, branchName, commitLogin, commitEmail } = options;
     const cloneDir = options.cloneDir ?? DEFAULT_CLONE_DIR;
-    const repoLocation = `${cloneDir}/${repository}`;
+    const repoLocation = excludeRepoSubfolder ? cloneDir : `${cloneDir}/${repository}`;
 
     const cloneUrl = `${serverUrl.replace(/\/$/, "")}/${repository}.git`;
 
@@ -95,7 +99,7 @@ export function cloneRepo(options: CloneRepoOptions): string {
         execFileSync("git", ["config", "user.email", commitEmail], { cwd: repoLocation });
         execFileSync("git", ["config", "credential.username", "x-access-token"], { cwd: repoLocation });
         execFileSync("git", ["config", "credential.helper",
-            `!f() { test "$1" = get && echo "password=${gitToken}"; }; f`], { cwd: repoLocation });
+            `!f() { test "$1" = get && echo "password=${credentialHelperEnvVar ? '${' + credentialHelperEnvVar + '}' : gitToken}"; }; f`], { cwd: repoLocation });
         execFileSync("git", ["remote", "set-url", "origin", cloneUrl], { cwd: repoLocation });
     };
 
