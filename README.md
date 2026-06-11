@@ -1,5 +1,7 @@
 # @github/copilot-engine-sdk
 
+> **NOTE:** This is a library that is used internally for certain integrations. It is not a supported integration path, preview, or released product.
+
 SDK for building engines on the GitHub Copilot agent platform.
 
 ## Overview
