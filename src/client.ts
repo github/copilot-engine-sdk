@@ -460,7 +460,7 @@ export class PlatformClient {
         const url = new URL(`jobs/${this._jobId}`, this.baseUrl);
 
         const response = await fetch(url.toString(), {
-            method: "GET",
+            method: "POST",
             headers: this.headers,
         });
 
