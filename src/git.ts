@@ -177,24 +177,98 @@ export function cloneRepo(options: CloneRepoOptions): string {
 // =============================================================================
 
 /**
+ * Runs a git command capturing stdout/stderr. On failure, throws an Error whose
+ * message includes git's combined output so the real reason (e.g. a rejected
+ * push) is preserved rather than the bare "Command failed: git ..." string.
+ */
+function git(args: string[], repoLocation: string): string {
+    try {
+        return execFileSync("git", args, {
+            cwd: repoLocation,
+            encoding: "utf-8",
+            stdio: ["pipe", "pipe", "pipe"],
+        });
+    } catch (error) {
+        throw new Error(`git ${args.join(" ")} failed: ${gitErrorOutput(error)}`);
+    }
+}
+
+/** Extracts git's combined stdout/stderr (falling back to the error message) from a thrown exec error. */
+function gitErrorOutput(error: unknown): string {
+    const e = error as { stderr?: string | Buffer; stdout?: string | Buffer; message?: string } | null;
+    const stderr = e?.stderr ? e.stderr.toString().trim() : "";
+    const stdout = e?.stdout ? e.stdout.toString().trim() : "";
+    const combined = [stdout, stderr].filter(Boolean).join("\n");
+    return combined || e?.message || String(error);
+}
+
+/** True when a push was rejected because the remote branch has advanced past our local tip. */
+function isNonFastForwardError(output: string): boolean {
+    return /\(fetch first\)|\(non-fast-forward\)|\[rejected\]|Updates were rejected|tip of your current branch is behind/i.test(
+        output,
+    );
+}
+
+/**
+ * Pushes the current HEAD to origin. If the push is rejected because the remote
+ * branch is ahead (non-fast-forward), fetches and rebases onto the remote tip,
+ * then retries. Any other failure is rethrown with git's output preserved.
+ *
+ * `--no-verify` bypasses the repository's local pre-push/pre-commit hooks.
+ * CCA finalization is a non-interactive safety net and should not run arbitrary
+ * repo hooks (e.g. husky / lint-staged); this matches the runtime error path,
+ * which already pushes with `noVerify`. It is defense-in-depth — the primary
+ * resilience here is the non-fast-forward rebase/retry below.
+ */
+function pushWithRebaseFallback(repoLocation: string): void {
+    try {
+        git(["push", "--no-verify", "--set-upstream", "origin", "HEAD"], repoLocation);
+        return;
+    } catch (error) {
+        const output = error instanceof Error ? error.message : String(error);
+        if (!isNonFastForwardError(output)) {
+            throw error;
+        }
+        console.log("[Engine SDK] Push rejected because the remote branch is ahead; fetching and rebasing...");
+    }
+
+    const branch = git(["rev-parse", "--abbrev-ref", "HEAD"], repoLocation).trim();
+    git(["fetch", "origin", branch], repoLocation);
+
+    try {
+        git(["rebase", "--no-verify", `origin/${branch}`], repoLocation);
+    } catch (rebaseError) {
+        try {
+            execFileSync("git", ["rebase", "--abort"], { cwd: repoLocation, stdio: "pipe" });
+        } catch {
+            // best-effort cleanup
+        }
+        throw rebaseError;
+    }
+
+    git(["push", "--no-verify", "--set-upstream", "origin", "HEAD"], repoLocation);
+}
+
+/**
  * Stages all changes, commits with the given message, and pushes to origin.
  * If there are no changes to commit, only pushes (to catch any prior local commits).
+ *
+ * Commits and pushes use `--no-verify` so the repository's local git hooks do not
+ * block automated CCA pushes, and the push transparently rebases onto the remote
+ * branch if it has advanced.
  */
 export function commitAndPush(repoLocation: string, commitMessage: string): CommitAndPushResult {
-    const status = execFileSync("git", ["status", "--porcelain"], {
-        cwd: repoLocation,
-        encoding: "utf-8",
-    }).trim();
+    const status = git(["status", "--porcelain"], repoLocation).trim();
 
     let hadChanges = false;
 
     if (status) {
         hadChanges = true;
-        execFileSync("git", ["add", "."], { cwd: repoLocation });
-        execFileSync("git", ["commit", "-m", commitMessage], { cwd: repoLocation });
+        git(["add", "."], repoLocation);
+        git(["commit", "--no-verify", "-m", commitMessage], repoLocation);
     }
 
-    execFileSync("git", ["push", "--set-upstream", "origin", "HEAD"], { cwd: repoLocation });
+    pushWithRebaseFallback(repoLocation);
 
     return {
         success: true,
