@@ -214,15 +214,14 @@ function isNonFastForwardError(output: string): boolean {
  * branch is ahead (non-fast-forward), fetches and rebases onto the remote tip,
  * then retries. Any other failure is rethrown with git's output preserved.
  *
- * `--no-verify` bypasses the repository's local pre-push/pre-commit hooks.
- * CCA finalization is a non-interactive safety net and should not run arbitrary
- * repo hooks (e.g. husky / lint-staged); this matches the runtime error path,
- * which already pushes with `noVerify`. It is defense-in-depth — the primary
- * resilience here is the non-fast-forward rebase/retry below.
+ * The repository's local git hooks (e.g. pre-push) are intentionally left
+ * enabled so we never silently bypass checks the repository owner configured.
+ * The resilience here is the non-fast-forward rebase/retry below, not skipping
+ * hooks.
  */
 function pushWithRebaseFallback(repoLocation: string): void {
     try {
-        git(["push", "--no-verify", "--set-upstream", "origin", "HEAD"], repoLocation);
+        git(["push", "--set-upstream", "origin", "HEAD"], repoLocation);
         return;
     } catch (error) {
         const output = error instanceof Error ? error.message : String(error);
@@ -236,7 +235,7 @@ function pushWithRebaseFallback(repoLocation: string): void {
     git(["fetch", "origin", branch], repoLocation);
 
     try {
-        git(["rebase", "--no-verify", `origin/${branch}`], repoLocation);
+        git(["rebase", `origin/${branch}`], repoLocation);
     } catch (rebaseError) {
         try {
             execFileSync("git", ["rebase", "--abort"], { cwd: repoLocation, stdio: "pipe" });
@@ -246,16 +245,16 @@ function pushWithRebaseFallback(repoLocation: string): void {
         throw rebaseError;
     }
 
-    git(["push", "--no-verify", "--set-upstream", "origin", "HEAD"], repoLocation);
+    git(["push", "--set-upstream", "origin", "HEAD"], repoLocation);
 }
 
 /**
  * Stages all changes, commits with the given message, and pushes to origin.
  * If there are no changes to commit, only pushes (to catch any prior local commits).
  *
- * Commits and pushes use `--no-verify` so the repository's local git hooks do not
- * block automated CCA pushes, and the push transparently rebases onto the remote
- * branch if it has advanced.
+ * The push transparently rebases onto the remote branch if it has advanced. The
+ * repository's local git hooks are left enabled so automated CCA pushes do not
+ * bypass checks the repository owner configured.
  */
 export function commitAndPush(repoLocation: string, commitMessage: string): CommitAndPushResult {
     const status = git(["status", "--porcelain"], repoLocation).trim();
@@ -265,7 +264,7 @@ export function commitAndPush(repoLocation: string, commitMessage: string): Comm
     if (status) {
         hadChanges = true;
         git(["add", "."], repoLocation);
-        git(["commit", "--no-verify", "-m", commitMessage], repoLocation);
+        git(["commit", "-m", commitMessage], repoLocation);
     }
 
     pushWithRebaseFallback(repoLocation);
