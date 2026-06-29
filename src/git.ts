@@ -228,7 +228,9 @@ function pushWithRebaseFallback(repoLocation: string): void {
         if (!isNonFastForwardError(output)) {
             throw error;
         }
-        console.log("[Engine SDK] Push rejected because the remote branch is ahead; fetching and rebasing...");
+        // Note: stderr, not stdout — commitAndPush runs inside the stdio MCP
+        // server (src/mcp-server.ts) where stdout is reserved for the MCP protocol.
+        console.error("[Engine SDK] Push rejected because the remote branch is ahead; fetching and rebasing...");
     }
 
     const branch = git(["rev-parse", "--abbrev-ref", "HEAD"], repoLocation).trim();
