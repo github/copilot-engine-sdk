@@ -57,6 +57,29 @@ export interface ProgressPayload {
     content: string;
 }
 
+/** Progress namespace used for Dreaming artifacts. Downstream consumers filter on this. */
+export const DREAMING_PROGRESS_NAMESPACE = "dreaming";
+/** Progress kind used for Dreaming artifacts. */
+export const DREAMING_ARTIFACT_KIND = "artifact";
+/** Progress payload version for Dreaming artifacts. */
+export const DREAMING_ARTIFACT_VERSION = 0;
+
+/**
+ * A Dreaming artifact produced by a dream job and reported back to the platform.
+ *
+ * NOTE: This shape is provisional (see github/agents issue 1476). The fields
+ * below are a reasonable M0 default and may change once the artifact schema is
+ * finalized.
+ */
+export interface DreamingArtifact {
+    /** Short human-readable title for the artifact. */
+    title: string;
+    /** Markdown summary describing what the dream produced. */
+    summary: string;
+    /** Optional structured payload for machine consumers. */
+    data?: Record<string, unknown>;
+}
+
 /**
  * Response from the progress API (may contain user messages for mid-session steering).
  */
@@ -368,6 +391,23 @@ export class PlatformClient {
                 error: err instanceof Error ? err : new Error(String(err)),
             };
         }
+    }
+
+    /**
+     * Sends a Dreaming artifact to the platform via the job-progress callback.
+     *
+     * Uses the first-party "dreaming" progress namespace (not this.namespace) so
+     * downstream consumers can filter for it. The platform token and nonce stay
+     * inside this trusted process; the artifact travels as the progress payload
+     * content.
+     */
+    async sendDreamingArtifact(artifact: DreamingArtifact): Promise<SendResult> {
+        return this.sendRawProgress({
+            namespace: DREAMING_PROGRESS_NAMESPACE,
+            kind: DREAMING_ARTIFACT_KIND,
+            version: DREAMING_ARTIFACT_VERSION,
+            content: JSON.stringify(artifact),
+        });
     }
 
     // =========================================================================

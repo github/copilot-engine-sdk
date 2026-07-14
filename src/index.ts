@@ -91,9 +91,9 @@ export type {
 // Platform Client
 // =============================================================================
 
-export { PlatformClient, resolveSelectedModel, isModelSelectionEnabled } from "./client.js";
+export { PlatformClient, resolveSelectedModel, isModelSelectionEnabled, DREAMING_PROGRESS_NAMESPACE, DREAMING_ARTIFACT_KIND, DREAMING_ARTIFACT_VERSION } from "./client.js";
 
-export type { PlatformClientConfig, ProgressPayload, ProgressRecord, ProgressResponse, SendResult, JobDetails, ProblemStatement, ResolveSelectedModelOptions } from "./client.js";
+export type { PlatformClientConfig, ProgressPayload, ProgressRecord, ProgressResponse, SendResult, JobDetails, ProblemStatement, ResolveSelectedModelOptions, DreamingArtifact } from "./client.js";
 
 // =============================================================================
 // MCP Server
@@ -105,11 +105,16 @@ export {
     REPORT_PROGRESS_TOOL_NAME,
     reportProgressToolDescription,
     reportProgressInputSchema,
+    REPORT_DREAMING_ARTIFACT_TOOL_NAME,
+    reportDreamingArtifactToolDescription,
+    reportDreamingArtifactInputSchema,
+    MAX_DREAMING_ARTIFACT_CONTENT_BYTES,
 } from "./mcp-server.js";
 
 export type {
     EngineMcpServerConfig,
     ReportProgressInput,
+    ReportDreamingArtifactInput,
 } from "./mcp-server.js";
 
 // =============================================================================
