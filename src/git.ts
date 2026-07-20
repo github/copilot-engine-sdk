@@ -16,6 +16,13 @@ import { existsSync } from "fs";
 
 const DEFAULT_CLONE_DIR = "/tmp/workspace";
 
+// Environment variables carrying the platform-served commit co-author, set by
+// the ccav3 app from job details. Used to append a `Co-authored-by` trailer to
+// commits this SDK creates (the finalize safety-net commit), mirroring the
+// trailer the runtime emits for report_progress commits.
+const COAUTHOR_LOGIN_ENV = "GITHUB_COPILOT_COMMIT_COAUTHOR_LOGIN";
+const COAUTHOR_EMAIL_ENV = "GITHUB_COPILOT_COMMIT_COAUTHOR_EMAIL";
+
 // =============================================================================
 // Helpers
 // =============================================================================
@@ -31,6 +38,27 @@ function branchExistsOnRemote(repoLocation: string, branchName: string): boolean
         stdio: ["pipe", "pipe", "pipe"],
     }).trim();
     return output.length > 0;
+}
+
+/**
+ * Appends a `Co-authored-by` trailer built from the platform-served commit
+ * co-author (exposed via GITHUB_COPILOT_COMMIT_COAUTHOR_LOGIN/GITHUB_COPILOT_COMMIT_COAUTHOR_EMAIL)
+ * to the commit message. The served email is used verbatim so it matches the
+ * trailer the runtime emits and the server-side signing check. Returns the
+ * message unchanged when the variables are unset or the trailer is already
+ * present.
+ */
+function withCoAuthorTrailer(commitMessage: string): string {
+    const login = process.env[COAUTHOR_LOGIN_ENV];
+    const email = process.env[COAUTHOR_EMAIL_ENV];
+    if (!login || !email) {
+        return commitMessage;
+    }
+    const trailer = `Co-authored-by: ${login} <${email}>`;
+    if (commitMessage.includes(trailer)) {
+        return commitMessage;
+    }
+    return `${commitMessage.trimEnd()}\n\n${trailer}`;
 }
 
 // =============================================================================
@@ -266,7 +294,7 @@ export function commitAndPush(repoLocation: string, commitMessage: string): Comm
     if (status) {
         hadChanges = true;
         git(["add", "."], repoLocation);
-        git(["commit", "-m", commitMessage], repoLocation);
+        git(["commit", "-m", withCoAuthorTrailer(commitMessage)], repoLocation);
     }
 
     pushWithRebaseFallback(repoLocation);
