@@ -48,7 +48,7 @@ function branchExistsOnRemote(repoLocation: string, branchName: string): boolean
  * message unchanged when the variables are unset or the trailer is already
  * present.
  */
-function withCoAuthorTrailer(commitMessage: string): string {
+export function withCoAuthorTrailer(commitMessage: string): string {
     const login = process.env[COAUTHOR_LOGIN_ENV];
     const email = process.env[COAUTHOR_EMAIL_ENV];
     if (!login || !email) {
