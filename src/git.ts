@@ -55,10 +55,12 @@ function withCoAuthorTrailer(commitMessage: string): string {
         return commitMessage;
     }
     const trailer = `Co-authored-by: ${login} <${email}>`;
-    if (commitMessage.includes(trailer)) {
+    const normalizedMessage = commitMessage.trimEnd();
+    const lastParagraph = normalizedMessage.split(/\r?\n(?:\r?\n)+/).pop() ?? "";
+    if (lastParagraph.split(/\r?\n/).includes(trailer)) {
         return commitMessage;
     }
-    return `${commitMessage.trimEnd()}\n\n${trailer}`;
+    return `${normalizedMessage}\n\n${trailer}`;
 }
 
 // =============================================================================
