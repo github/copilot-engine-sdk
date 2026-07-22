@@ -27,8 +27,8 @@ import { appendFileSync } from "fs";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
-import { commitAndPush } from "./git.js";
 import type { PlatformClient, DreamingArtifact } from "./client.js";
+import { commitAndPush, withCoAuthorTrailer } from "./git.js";
 
 // =============================================================================
 // Debug Logging (writes to file since stdout is used for MCP protocol)
@@ -161,7 +161,7 @@ async function executeReportProgress(
 
             if (status) {
                 execFileSync("git", ["add", "."], { cwd: config.workingDir });
-                execFileSync("git", ["commit", "-m", commitMessage], { cwd: config.workingDir });
+                execFileSync("git", ["commit", "-m", withCoAuthorTrailer(commitMessage)], { cwd: config.workingDir });
                 log("git commit complete (local only)", { message: commitMessage });
                 results.push(`Committed locally: ${commitMessage}`);
             } else {

@@ -540,6 +540,16 @@ export interface JobDetails {
     branch_name?: string;
     commit_login: string;
     commit_email: string;
+    /**
+     * Login for the `Co-authored-by` trailer on agent commits. Distinct from the
+     * commit author (`commit_login`): by default the agent authors the commit and
+     * the user is credited as co-author, but under act-as-user the roles swap so
+     * the user authors and the agent is the co-author. Optional for backward
+     * compatibility with platforms that do not populate it.
+     */
+    commit_coauthor_login?: string;
+    /** Email for the `Co-authored-by` trailer. See {@link commit_coauthor_login}. */
+    commit_coauthor_email?: string;
     mcp_proxy_url?: string;
     /** Model selected by the platform for this run. Present when model selection is enabled. */
     selected_model?: string;
