@@ -30,16 +30,14 @@ Until this package is published to a package registry, install it directly from 
 
 Then run `npm install`.
 
-### Consuming canary builds from the internal feed
+### Installing from the internal Azure Artifacts feed
 
-Canary builds are published from `main` to the internal Azure Artifacts
-`copilot-canary` feed **only** — never to public npm — by
-`.github/workflows/canary-publish.yml`. They are versioned
-`<next-patch>-canary.<run>.g<sha>` under the `canary` dist-tag, so they sort
-above the current public `latest` and below the eventual real release.
-
-To install a canary, point the `@github` scope at the feed and authenticate.
-Add an `.npmrc` next to your `package.json`:
+Every release published by `.github/workflows/publish.yml` is mirrored — the
+exact same version — to the internal Azure Artifacts `copilot-canary` feed in
+addition to public npm. Public consumers should just use npm (above); internal
+consumers that need to resolve `@github/copilot-engine-sdk` from the feed can
+point the `@github` scope at it and authenticate. Add an `.npmrc` next to your
+`package.json`:
 
 ```ini
 # .npmrc — resolve the @github scope from the copilot-canary feed.
@@ -56,7 +54,7 @@ resource id `499b84ac-1321-427f-aa17-267ca6975798`):
 ```bash
 export AZURE_ARTIFACTS_TOKEN="$(az account get-access-token \
   --resource 499b84ac-1321-427f-aa17-267ca6975798 --query accessToken -o tsv)"
-npm install @github/copilot-engine-sdk@canary
+npm install
 ```
 
 Locally, use an Azure DevOps Personal Access Token with **Packaging: Read**
