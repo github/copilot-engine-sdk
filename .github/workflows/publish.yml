@@ -1,10 +1,23 @@
 name: Publish to npm
 
+# =============================================================================
+# TEST BRANCH — DO NOT MERGE.
+#
+# Exercises the OIDC -> id-cpd-ci -> copilot-canary feed path end to end without
+# touching public npm or cutting a release. Differences from the real workflow:
+#   * the npm publish, integrity check, and release job are removed
+#   * the package is renamed to a disposable name so the real package's versions
+#     and dist-tags on the feed are never touched
+#   * the version is a fixed 0.0.0 prerelease, not derived from public npm
+# The publish-internal job below is byte-identical to the real one — that is the
+# whole point, so the thing under test is the actual code.
+# =============================================================================
+
 on:
   workflow_dispatch:
     inputs:
       version_type:
-        description: "Version increment type"
+        description: "Version increment type (unused on the test branch)"
         required: true
         type: choice
         options:
@@ -23,6 +36,9 @@ env:
   FEED_URL: "https://pkgs.dev.azure.com/devdiv/_packaging/copilot-canary/npm/registry/"
   # Azure DevOps resource id used to mint an AAD access token for the feed via OIDC.
   ADO_RESOURCE: "499b84ac-1321-427f-aa17-267ca6975798"
+  # Disposable package name so this test never creates or retags the real
+  # package on the shared feed. Delete it from the feed once the test passes.
+  TEST_PKG_NAME: "@github/copilot-engine-sdk-oidc-test"
 
 concurrency:
   group: publish-npm
@@ -53,28 +69,18 @@ jobs:
           node-version: 24
           registry-url: "https://registry.npmjs.org"
 
-      - name: Get current npm version
-        id: current_version
-        run: |
-          CURRENT_VERSION=$(npm view @github/copilot-engine-sdk version 2>/dev/null || echo "0.0.0")
-          echo "version=$CURRENT_VERSION" >> "$GITHUB_OUTPUT"
-          echo "Current published version: $CURRENT_VERSION"
-          echo "- Current published version: \`$CURRENT_VERSION\`" >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Calculate next version
+      - name: Calculate test version
         id: next_version
         run: |
-          CURRENT="${{ steps.current_version.outputs.version }}"
-          NEXT_VERSION=$(npx --yes semver "$CURRENT" -i "$VERSION_TYPE")
-          if [ -z "$NEXT_VERSION" ]; then
-            echo "Failed to calculate next version from $CURRENT using increment $VERSION_TYPE" >&2
-            exit 1
-          fi
-          echo "version=$NEXT_VERSION" >> "$GITHUB_OUTPUT"
-          echo "Next version: $NEXT_VERSION (incremented $VERSION_TYPE from $CURRENT)"
-          echo "- Next version: \`$NEXT_VERSION\` (incremented $VERSION_TYPE from \`$CURRENT\`)" >> "$GITHUB_STEP_SUMMARY"
-        env:
-          VERSION_TYPE: ${{ inputs.version_type }}
+          set -euo pipefail
+          # A fixed 0.0.0 prerelease: sorts below every real version, so even a
+          # misdirected publish could never shadow a release. Run number and SHA
+          # keep repeated test runs unique.
+          SHORT_SHA="$(git rev-parse --short HEAD)"
+          VERSION="0.0.0-oidctest.${GITHUB_RUN_NUMBER}.g${SHORT_SHA}"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Test version: $VERSION"
+          echo "- Test version: \`$VERSION\`" >> "$GITHUB_STEP_SUMMARY"
 
   publish:
     needs: version
@@ -96,11 +102,21 @@ jobs:
           registry-url: "https://registry.npmjs.org"
           cache: npm
 
-      - name: Set package version
-        run: npm version "$VERSION" --no-git-tag-version --allow-same-version
-
       - name: Install dependencies
         run: npm ci
+
+      - name: Rename the package for the feed test
+        run: |
+          set -euo pipefail
+          # After npm ci, so the rename can't desync package.json from
+          # package-lock.json. Renaming before packing means publish-internal
+          # stays byte-identical to the real job: it just publishes whatever
+          # tarball it is handed.
+          npm pkg set name="$TEST_PKG_NAME"
+          echo "Package renamed to $TEST_PKG_NAME"
+
+      - name: Set package version
+        run: npm version "$VERSION" --no-git-tag-version --allow-same-version
 
       - name: Build
         run: npm run build
@@ -126,40 +142,9 @@ jobs:
           # 409 on the already-uploaded artifact.
           overwrite: true
 
-      - name: Publish to npm
-        env:
-          TARBALL: ${{ steps.pack.outputs.tarball }}
-        run: |
-          set -euo pipefail
-          # Idempotent so a re-run of a failed job doesn't fail on an already
-          # published version. Explicit --registry keeps the target unambiguous.
-          if bash script/npm-publish-idempotent.sh --run "$TARBALL" \
-            --tag latest --access public --registry https://registry.npmjs.org; then
-            echo "Published (or already existed): https://www.npmjs.com/package/@github/copilot-engine-sdk/v/${VERSION}" >> "$GITHUB_STEP_SUMMARY"
-          else
-            exit 1
-          fi
-
-      - name: Verify npm holds this exact tarball
-        env:
-          TARBALL: ${{ steps.pack.outputs.tarball }}
-        run: |
-          set -euo pipefail
-          # The publish above treats "already published" as success, which is what
-          # makes retries safe — but a conflict alone doesn't prove the registry
-          # holds *our* tarball: npm reserves unpublished versions permanently, and
-          # the version is pinned before this job waits for environment approval, so
-          # it could have been claimed out of band. Without this check such a run
-          # would exit 0 and the jobs below would mirror a different artifact to the
-          # internal feed and the release under the same version. `npm pack` output
-          # is byte-reproducible, so a genuine retry still matches.
-          LOCAL="sha512-$(openssl dgst -sha512 -binary "$TARBALL" | base64 -w0)"
-          REMOTE="$(npm view "@github/copilot-engine-sdk@${VERSION}" dist.integrity --registry https://registry.npmjs.org)"
-          if [ "$LOCAL" != "$REMOTE" ]; then
-            echo "::error::npm holds a different tarball for ${VERSION} (local $LOCAL, npm $REMOTE)"
-            exit 1
-          fi
-          echo "Verified npm tarball integrity: $REMOTE"
+      # The real workflow publishes to public npm and verifies the published
+      # tarball's integrity here. Both are removed on the test branch — nothing
+      # in this run may reach registry.npmjs.org.
 
   publish-internal:
     # Mirror the just-published release to the internal Azure Artifacts feed.
@@ -251,67 +236,3 @@ jobs:
           else
             exit 1
           fi
-
-  release:
-    # Cut the GitHub release after the npm publish succeeds. Independent of
-    # publish-internal so neither blocks the other, and re-runnable on its own
-    # (gh release create is skipped if the tag already exists).
-    needs: [version, publish]
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    env:
-      VERSION: ${{ needs.version.outputs.version }}
-      GH_TOKEN: ${{ github.token }}
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Download npm tarball
-        uses: actions/download-artifact@v4
-        with:
-          name: npm-tarball
-          path: ${{ runner.temp }}/npm-tarball
-
-      - name: Determine previous release tag
-        id: previous_tag
-        run: |
-          PREVIOUS_TAG=$(gh release list --limit 1 --exclude-drafts --exclude-pre-releases --json tagName --jq '.[0].tagName // empty' 2>/dev/null || echo "")
-          echo "tag=$PREVIOUS_TAG" >> "$GITHUB_OUTPUT"
-          if [ -n "$PREVIOUS_TAG" ]; then
-            echo "Previous release tag: $PREVIOUS_TAG"
-            echo "- Previous release tag: \`$PREVIOUS_TAG\`" >> "$GITHUB_STEP_SUMMARY"
-          else
-            echo "No previous release found"
-            echo "- No previous release found" >> "$GITHUB_STEP_SUMMARY"
-          fi
-
-      - name: Create GitHub release
-        env:
-          PREVIOUS_TAG: ${{ steps.previous_tag.outputs.tag }}
-          BUNDLE_DIR: ${{ runner.temp }}/npm-tarball
-        run: |
-          set -euo pipefail
-          TAG="v${VERSION}"
-
-          # Idempotent: a re-run after a partial failure must not fail on an
-          # already-created release tag.
-          if gh release view "$TAG" >/dev/null 2>&1; then
-            echo "Release $TAG already exists; skipping creation." >> "$GITHUB_STEP_SUMMARY"
-            exit 0
-          fi
-
-          RELEASE_ARGS=(
-            "$TAG"
-            --title "$TAG"
-            --generate-notes
-            "$BUNDLE_DIR"/*.tgz
-          )
-
-          if [ -n "$PREVIOUS_TAG" ]; then
-            RELEASE_ARGS+=(--notes-start-tag "$PREVIOUS_TAG")
-          fi
-
-          gh release create "${RELEASE_ARGS[@]}" >> "$GITHUB_STEP_SUMMARY" 2>&1
