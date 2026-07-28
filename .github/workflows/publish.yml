@@ -33,26 +33,25 @@ defaults:
     shell: bash
 
 jobs:
-  publish:
+  # Resolve the version once, in its own job, so it is pinned across retries.
+  # If a downstream publish job fails and is re-run via "Re-run failed jobs",
+  # this job's output is reused rather than recomputed — otherwise a re-run
+  # would read the now-higher public version and publish a different one,
+  # defeating both the idempotent publish and the "same version everywhere"
+  # invariant.
+  version:
     runs-on: ubuntu-latest
-    environment: npm-publish
-    permissions:
-      contents: write
-      id-token: write
     outputs:
       version: ${{ steps.next_version.outputs.version }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: 24
           registry-url: "https://registry.npmjs.org"
-          cache: npm
 
       - name: Get current npm version
         id: current_version
@@ -77,10 +76,28 @@ jobs:
         env:
           VERSION_TYPE: ${{ inputs.version_type }}
 
+  publish:
+    needs: version
+    runs-on: ubuntu-latest
+    environment: npm-publish
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          registry-url: "https://registry.npmjs.org"
+          cache: npm
+
       - name: Set package version
-        env:
-          VERSION: ${{ steps.next_version.outputs.version }}
-        run: npm version "$VERSION" --no-git-tag-version
+        run: npm version "$VERSION" --no-git-tag-version --allow-same-version
 
       - name: Install dependencies
         run: npm ci
@@ -105,11 +122,13 @@ jobs:
           path: ${{ steps.pack.outputs.tarball }}
           if-no-files-found: error
           retention-days: 7
+          # Allow the publish job to be re-run in the same workflow run without a
+          # 409 on the already-uploaded artifact.
+          overwrite: true
 
       - name: Publish to npm
         env:
           TARBALL: ${{ steps.pack.outputs.tarball }}
-          VERSION: ${{ steps.next_version.outputs.version }}
         run: |
           set -euo pipefail
           # Idempotent so a re-run of a failed job doesn't fail on an already
@@ -121,47 +140,12 @@ jobs:
             exit 1
           fi
 
-      - name: Determine previous release tag
-        id: previous_tag
-        run: |
-          PREVIOUS_TAG=$(gh release list --limit 1 --exclude-drafts --exclude-pre-releases --json tagName --jq '.[0].tagName // empty' 2>/dev/null || echo "")
-          echo "tag=$PREVIOUS_TAG" >> "$GITHUB_OUTPUT"
-          if [ -n "$PREVIOUS_TAG" ]; then
-            echo "Previous release tag: $PREVIOUS_TAG"
-            echo "- Previous release tag: \`$PREVIOUS_TAG\`" >> "$GITHUB_STEP_SUMMARY"
-          else
-            echo "No previous release found"
-            echo "- No previous release found" >> "$GITHUB_STEP_SUMMARY"
-          fi
-        env:
-          GH_TOKEN: ${{ github.token }}
-
-      - name: Create GitHub release
-        env:
-          VERSION: ${{ steps.next_version.outputs.version }}
-          PREVIOUS_TAG: ${{ steps.previous_tag.outputs.tag }}
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          TAG="v${VERSION}"
-
-          RELEASE_ARGS=(
-            "$TAG"
-            --title "$TAG"
-            --generate-notes
-            ./*.tgz
-          )
-
-          if [ -n "$PREVIOUS_TAG" ]; then
-            RELEASE_ARGS+=(--notes-start-tag "$PREVIOUS_TAG")
-          fi
-
-          gh release create "${RELEASE_ARGS[@]}" >> "$GITHUB_STEP_SUMMARY" 2>&1
-
   publish-internal:
     # Mirror the just-published release to the internal Azure Artifacts feed.
     # Runs only after the public npm publish succeeds and never on forks (the
-    # feed and its OIDC federation are internal).
-    needs: publish
+    # feed and its OIDC federation are internal). Independent of the release job
+    # so a GitHub-release failure never blocks the mirror, and vice versa.
+    needs: [version, publish]
     if: ${{ !github.event.repository.fork }}
     runs-on: ubuntu-latest
     # The admin configures a federated credential on the id-cpd-ci identity with
@@ -172,7 +156,7 @@ jobs:
       contents: read
       id-token: write # Required for OIDC (azure/login)
     env:
-      VERSION: ${{ needs.publish.outputs.version }}
+      VERSION: ${{ needs.version.outputs.version }}
     steps:
       # Checkout only for script/npm-publish-idempotent.sh; the artifact below
       # carries the package contents.
@@ -243,3 +227,67 @@ jobs:
           else
             exit 1
           fi
+
+  release:
+    # Cut the GitHub release after the npm publish succeeds. Independent of
+    # publish-internal so neither blocks the other, and re-runnable on its own
+    # (gh release create is skipped if the tag already exists).
+    needs: [version, publish]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Download npm tarball
+        uses: actions/download-artifact@v4
+        with:
+          name: npm-tarball
+          path: ${{ runner.temp }}/npm-tarball
+
+      - name: Determine previous release tag
+        id: previous_tag
+        run: |
+          PREVIOUS_TAG=$(gh release list --limit 1 --exclude-drafts --exclude-pre-releases --json tagName --jq '.[0].tagName // empty' 2>/dev/null || echo "")
+          echo "tag=$PREVIOUS_TAG" >> "$GITHUB_OUTPUT"
+          if [ -n "$PREVIOUS_TAG" ]; then
+            echo "Previous release tag: $PREVIOUS_TAG"
+            echo "- Previous release tag: \`$PREVIOUS_TAG\`" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "No previous release found"
+            echo "- No previous release found" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Create GitHub release
+        env:
+          PREVIOUS_TAG: ${{ steps.previous_tag.outputs.tag }}
+          BUNDLE_DIR: ${{ runner.temp }}/npm-tarball
+        run: |
+          set -euo pipefail
+          TAG="v${VERSION}"
+
+          # Idempotent: a re-run after a partial failure must not fail on an
+          # already-created release tag.
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release $TAG already exists; skipping creation." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          RELEASE_ARGS=(
+            "$TAG"
+            --title "$TAG"
+            --generate-notes
+            "$BUNDLE_DIR"/*.tgz
+          )
+
+          if [ -n "$PREVIOUS_TAG" ]; then
+            RELEASE_ARGS+=(--notes-start-tag "$PREVIOUS_TAG")
+          fi
+
+          gh release create "${RELEASE_ARGS[@]}" >> "$GITHUB_STEP_SUMMARY" 2>&1
