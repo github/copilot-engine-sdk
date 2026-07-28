@@ -140,6 +140,27 @@ jobs:
             exit 1
           fi
 
+      - name: Verify npm holds this exact tarball
+        env:
+          TARBALL: ${{ steps.pack.outputs.tarball }}
+        run: |
+          set -euo pipefail
+          # The publish above treats "already published" as success, which is what
+          # makes retries safe — but a conflict alone doesn't prove the registry
+          # holds *our* tarball: npm reserves unpublished versions permanently, and
+          # the version is pinned before this job waits for environment approval, so
+          # it could have been claimed out of band. Without this check such a run
+          # would exit 0 and the jobs below would mirror a different artifact to the
+          # internal feed and the release under the same version. `npm pack` output
+          # is byte-reproducible, so a genuine retry still matches.
+          LOCAL="sha512-$(openssl dgst -sha512 -binary "$TARBALL" | base64 -w0)"
+          REMOTE="$(npm view "@github/copilot-engine-sdk@${VERSION}" dist.integrity --registry https://registry.npmjs.org)"
+          if [ "$LOCAL" != "$REMOTE" ]; then
+            echo "::error::npm holds a different tarball for ${VERSION} (local $LOCAL, npm $REMOTE)"
+            exit 1
+          fi
+          echo "Verified npm tarball integrity: $REMOTE"
+
   publish-internal:
     # Mirror the just-published release to the internal Azure Artifacts feed.
     # Runs only after the public npm publish succeeds and never on forks (the
