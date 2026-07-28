@@ -30,38 +30,6 @@ Until this package is published to a package registry, install it directly from 
 
 Then run `npm install`.
 
-### Installing from the internal Azure Artifacts feed
-
-Every release published by `.github/workflows/publish.yml` is mirrored — the
-exact same version — to the internal Azure Artifacts `copilot-canary` feed in
-addition to public npm. Public consumers should just use npm (above); internal
-consumers that need to resolve `@github/copilot-engine-sdk` from the feed can
-point the `@github` scope at it and authenticate. Add an `.npmrc` next to your
-`package.json`:
-
-```ini
-# .npmrc — resolve the @github scope from the copilot-canary feed.
-# All other packages continue to resolve from your default registry.
-@github:registry=https://pkgs.dev.azure.com/devdiv/_packaging/copilot-canary/npm/registry/
-//pkgs.dev.azure.com/devdiv/_packaging/copilot-canary/npm/:_authToken=${AZURE_ARTIFACTS_TOKEN}
-//pkgs.dev.azure.com/devdiv/_packaging/copilot-canary/npm/registry/:_authToken=${AZURE_ARTIFACTS_TOKEN}
-```
-
-Supply `AZURE_ARTIFACTS_TOKEN` at install time. In CI, mint a short-lived AAD
-token the same way the publish workflow does (OIDC via `azure/login`, ADO
-resource id `499b84ac-1321-427f-aa17-267ca6975798`):
-
-```bash
-export AZURE_ARTIFACTS_TOKEN="$(az account get-access-token \
-  --resource 499b84ac-1321-427f-aa17-267ca6975798 --query accessToken -o tsv)"
-npm install
-```
-
-Locally, use an Azure DevOps Personal Access Token with **Packaging: Read**
-scope as `AZURE_ARTIFACTS_TOKEN`. Only the `@github` scope needs the feed; the
-SDK's own runtime deps (`@modelcontextprotocol/sdk`, `zod`) resolve from public
-npm.
-
 ### Local Development
 
 For local development with a cloned copy of the SDK:
