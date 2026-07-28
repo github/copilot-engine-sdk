@@ -41,7 +41,9 @@ env:
   TEST_PKG_NAME: "@github/copilot-engine-sdk-oidc-test"
 
 concurrency:
-  group: publish-npm
+  # Deliberately NOT the real workflow's `publish-npm` group: a test run must
+  # never queue behind, block, or displace a production release.
+  group: publish-npm-oidctest-${{ github.ref }}
   cancel-in-progress: false
 
 defaults:
@@ -236,3 +238,16 @@ jobs:
           else
             exit 1
           fi
+
+      # The step above is copied verbatim from the real workflow, so its summary
+      # line names the real package. Correct the public record: this run only
+      # ever touched the disposable test name.
+      - name: Correct the test package name in the summary
+        run: |
+          set -euo pipefail
+          {
+            echo ""
+            echo "> **OIDC test run.** No package was published to public npm."
+            echo "> The name actually published to the feed was \`${TEST_PKG_NAME}@${VERSION}\`,"
+            echo "> not \`@github/copilot-engine-sdk\`."
+          } >> "$GITHUB_STEP_SUMMARY"
