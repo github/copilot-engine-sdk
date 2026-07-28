@@ -169,10 +169,13 @@ jobs:
     needs: [version, publish]
     if: ${{ !github.event.repository.fork }}
     runs-on: ubuntu-latest
-    # The admin configures a federated credential on the id-cpd-ci identity with
-    # subject repo:github/copilot-engine-sdk:environment:cicd, so this name must
-    # stay exactly `cicd`.
-    environment: cicd
+    # Reuses the public publish job's environment rather than a dedicated one so
+    # no new environment has to be provisioned. The federated credential on
+    # id-cpd-ci is scoped to subject
+    # repo:github/copilot-engine-sdk:environment:npm-publish, so this name must
+    # stay in sync with that claim. The environment claim carries no branch, so
+    # the same credential works from any ref this workflow is dispatched against.
+    environment: npm-publish
     permissions:
       contents: read
       id-token: write # Required for OIDC (azure/login)
