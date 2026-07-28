@@ -1,5 +1,11 @@
 name: Publish to npm
 
+# The workflow name above is kept so this file stays the same dispatchable
+# workflow as the real one. run-name is per-run and has no side effects on the
+# repo's Actions UI, so it carries the warning instead — without it the run is
+# titled "Publish to npm", which is alarming and wrong on this branch.
+run-name: "TEST — internal feed only, NOTHING is published to npm (${{ github.ref_name }})"
+
 # =============================================================================
 # TEST BRANCH — DO NOT MERGE.
 #
@@ -85,6 +91,7 @@ jobs:
           echo "- Test version: \`$VERSION\`" >> "$GITHUB_STEP_SUMMARY"
 
   publish:
+    name: Build tarball (npm publish removed on this branch)
     needs: version
     runs-on: ubuntu-latest
     environment: npm-publish
