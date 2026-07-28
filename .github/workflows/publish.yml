@@ -14,28 +14,44 @@ on:
         default: patch
 
 permissions:
-  contents: write
-  id-token: write
+  contents: read
+
+env:
+  # Internal org-scoped Azure Artifacts feed. Every release is mirrored here in
+  # addition to public npm — the exact same version and tarball, never a
+  # separate canary. Single source of truth so the feed name isn't repeated.
+  FEED_URL: "https://pkgs.dev.azure.com/devdiv/_packaging/copilot-canary/npm/registry/"
+  # Azure DevOps resource id used to mint an AAD access token for the feed via OIDC.
+  ADO_RESOURCE: "499b84ac-1321-427f-aa17-267ca6975798"
+
+concurrency:
+  group: publish-npm
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
 
 jobs:
-  publish:
+  # Resolve the version once, in its own job, so it is pinned across retries.
+  # If a downstream publish job fails and is re-run via "Re-run failed jobs",
+  # this job's output is reused rather than recomputed — otherwise a re-run
+  # would read the now-higher public version and publish a different one,
+  # defeating both the idempotent publish and the "same version everywhere"
+  # invariant.
+  version:
     runs-on: ubuntu-latest
-    environment: npm-publish
-    concurrency:
-      group: publish-npm
-      cancel-in-progress: false
+    outputs:
+      version: ${{ steps.next_version.outputs.version }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: 24
           registry-url: "https://registry.npmjs.org"
-          cache: npm
 
       - name: Get current npm version
         id: current_version
@@ -60,10 +76,28 @@ jobs:
         env:
           VERSION_TYPE: ${{ inputs.version_type }}
 
+  publish:
+    needs: version
+    runs-on: ubuntu-latest
+    environment: npm-publish
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          registry-url: "https://registry.npmjs.org"
+          cache: npm
+
       - name: Set package version
-        env:
-          VERSION: ${{ steps.next_version.outputs.version }}
-        run: npm version "$VERSION" --no-git-tag-version
+        run: npm version "$VERSION" --no-git-tag-version --allow-same-version
 
       - name: Install dependencies
         run: npm ci
@@ -72,10 +106,174 @@ jobs:
         run: npm run build
 
       - name: Create npm tarball
-        run: npm pack
+        id: pack
+        run: |
+          set -euo pipefail
+          # Pack once and publish this exact tarball to both registries below so
+          # the internal feed mirror is byte-identical to what went to public npm.
+          FILE="$(npm pack --silent)"
+          echo "tarball=$FILE" >> "$GITHUB_OUTPUT"
+          echo "Packed: $FILE"
+
+      - name: Upload npm tarball
+        uses: actions/upload-artifact@v4
+        with:
+          name: npm-tarball
+          path: ${{ steps.pack.outputs.tarball }}
+          if-no-files-found: error
+          retention-days: 7
+          # Allow the publish job to be re-run in the same workflow run without a
+          # 409 on the already-uploaded artifact.
+          overwrite: true
 
       - name: Publish to npm
-        run: npm publish --access public
+        env:
+          TARBALL: ${{ steps.pack.outputs.tarball }}
+        run: |
+          set -euo pipefail
+          # Idempotent so a re-run of a failed job doesn't fail on an already
+          # published version. Explicit --registry keeps the target unambiguous.
+          if bash script/npm-publish-idempotent.sh --run "$TARBALL" \
+            --tag latest --access public --registry https://registry.npmjs.org; then
+            echo "Published (or already existed): https://www.npmjs.com/package/@github/copilot-engine-sdk/v/${VERSION}" >> "$GITHUB_STEP_SUMMARY"
+          else
+            exit 1
+          fi
+
+      - name: Verify npm holds this exact tarball
+        env:
+          TARBALL: ${{ steps.pack.outputs.tarball }}
+        run: |
+          set -euo pipefail
+          # The publish above treats "already published" as success, which is what
+          # makes retries safe — but a conflict alone doesn't prove the registry
+          # holds *our* tarball: npm reserves unpublished versions permanently, and
+          # the version is pinned before this job waits for environment approval, so
+          # it could have been claimed out of band. Without this check such a run
+          # would exit 0 and the jobs below would mirror a different artifact to the
+          # internal feed and the release under the same version. `npm pack` output
+          # is byte-reproducible, so a genuine retry still matches.
+          LOCAL="sha512-$(openssl dgst -sha512 -binary "$TARBALL" | base64 -w0)"
+          REMOTE="$(npm view "@github/copilot-engine-sdk@${VERSION}" dist.integrity --registry https://registry.npmjs.org)"
+          if [ "$LOCAL" != "$REMOTE" ]; then
+            echo "::error::npm holds a different tarball for ${VERSION} (local $LOCAL, npm $REMOTE)"
+            exit 1
+          fi
+          echo "Verified npm tarball integrity: $REMOTE"
+
+  publish-internal:
+    # Mirror the just-published release to the internal Azure Artifacts feed.
+    # Runs only after the public npm publish succeeds and never on forks (the
+    # feed and its OIDC federation are internal). Independent of the release job
+    # so a GitHub-release failure never blocks the mirror, and vice versa.
+    needs: [version, publish]
+    if: ${{ !github.event.repository.fork }}
+    runs-on: ubuntu-latest
+    # Reuses the public publish job's environment rather than a dedicated one so
+    # no new environment has to be provisioned. The federated credential on
+    # id-cpd-ci is scoped to subject
+    # repo:github/copilot-engine-sdk:environment:npm-publish, so this name must
+    # stay in sync with that claim. The environment claim carries no branch, so
+    # the same credential works from any ref this workflow is dispatched against.
+    environment: npm-publish
+    permissions:
+      contents: read
+      id-token: write # Required for OIDC (azure/login)
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      # Checkout only for script/npm-publish-idempotent.sh; the artifact below
+      # carries the package contents.
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Download npm tarball
+        uses: actions/download-artifact@v4
+        with:
+          name: npm-tarball
+          path: ${{ runner.temp }}/npm-tarball
+
+      - name: Validate internal feed
+        run: |
+          set -euo pipefail
+          # Guard: the publish command below targets $FEED_URL explicitly, so
+          # pin its value here — a wrong/empty feed URL must fail rather than
+          # silently retarget the publish.
+          if [ "$FEED_URL" != "https://pkgs.dev.azure.com/devdiv/_packaging/copilot-canary/npm/registry/" ]; then
+            echo "::error::Unexpected internal feed URL: $FEED_URL"
+            exit 1
+          fi
+
+      - name: Azure Login (OIDC -> id-cpd-ci)
+        uses: azure/login@532459ea530d8321f2fb9bb10d1e0bcf23869a43 # v3.0.0
+        with:
+          client-id: "${{ vars.CPD_ID_CLIENT_ID }}" # id-cpd-ci
+          tenant-id: "${{ vars.CPD_ID_TENANT_ID }}"
+          allow-no-subscriptions: true
+
+      - name: Configure npm authentication for the internal feed
+        run: |
+          set -euo pipefail
+          TOKEN=$(az account get-access-token --resource "$ADO_RESOURCE" --query accessToken -o tsv)
+          echo "::add-mask::$TOKEN"
+          # Derive the protocol-relative auth scopes from FEED_URL (single source
+          # of truth) and write ONLY the two _authToken lines: the .../npm/registry/
+          # scope and the .../npm/ base scope. No scoped @github:registry line —
+          # the publish target is supplied explicitly via --registry below.
+          FEED_AUTH_REGISTRY="${FEED_URL#https:}"
+          FEED_AUTH_BASE="${FEED_AUTH_REGISTRY%registry/}"
+          {
+            echo "${FEED_AUTH_REGISTRY}:_authToken=${TOKEN}"
+            echo "${FEED_AUTH_BASE}:_authToken=${TOKEN}"
+          } > "$HOME/.npmrc"
+          echo "Wrote auth-only ~/.npmrc for the internal feed"
+
+      - name: Publish to the internal feed
+        env:
+          BUNDLE_DIR: ${{ runner.temp }}/npm-tarball
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          tarballs=("$BUNDLE_DIR"/*.tgz)
+          if [ ${#tarballs[@]} -ne 1 ]; then
+            echo "::error::Expected exactly one tarball, found ${#tarballs[@]}"
+            exit 1
+          fi
+          # Publish the EXACT tarball that went to public npm, only to the
+          # internal feed (explicit --registry). Idempotent so re-runs don't fail.
+          if bash "$GITHUB_WORKSPACE/script/npm-publish-idempotent.sh" --run "${tarballs[0]}" \
+            --registry "$FEED_URL" --tag latest; then
+            echo "Published internally (or already existed): @github/copilot-engine-sdk@${VERSION}" >> "$GITHUB_STEP_SUMMARY"
+            echo "Feed: ${FEED_URL}" >> "$GITHUB_STEP_SUMMARY"
+          else
+            exit 1
+          fi
+
+  release:
+    # Cut the GitHub release after the npm publish succeeds. Independent of
+    # publish-internal so neither blocks the other, and re-runnable on its own
+    # (gh release create is skipped if the tag already exists).
+    needs: [version, publish]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Download npm tarball
+        uses: actions/download-artifact@v4
+        with:
+          name: npm-tarball
+          path: ${{ runner.temp }}/npm-tarball
 
       - name: Determine previous release tag
         id: previous_tag
@@ -89,22 +287,27 @@ jobs:
             echo "No previous release found"
             echo "- No previous release found" >> "$GITHUB_STEP_SUMMARY"
           fi
-        env:
-          GH_TOKEN: ${{ github.token }}
 
       - name: Create GitHub release
         env:
-          VERSION: ${{ steps.next_version.outputs.version }}
           PREVIOUS_TAG: ${{ steps.previous_tag.outputs.tag }}
-          GH_TOKEN: ${{ github.token }}
+          BUNDLE_DIR: ${{ runner.temp }}/npm-tarball
         run: |
+          set -euo pipefail
           TAG="v${VERSION}"
+
+          # Idempotent: a re-run after a partial failure must not fail on an
+          # already-created release tag.
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release $TAG already exists; skipping creation." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
 
           RELEASE_ARGS=(
             "$TAG"
             --title "$TAG"
             --generate-notes
-            ./*.tgz
+            "$BUNDLE_DIR"/*.tgz
           )
 
           if [ -n "$PREVIOUS_TAG" ]; then
