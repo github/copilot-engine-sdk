@@ -116,6 +116,9 @@ async function executeReportProgress(
     const { commitMessage, prDescription } = input;
     const results: string[] = [];
     let hasError = false;
+    // Stays undefined unless a push actually happened and the SHA was resolved,
+    // so the local-only and error paths never report a SHA that is not on the remote.
+    let pushedCommitSha: string | undefined;
 
     log("executeReportProgress", { commitMessage, prDescriptionLength: prDescription.length });
 
@@ -125,6 +128,7 @@ async function executeReportProgress(
             const gitResult = commitAndPush(config.workingDir, commitMessage);
             log("git commit and push", { hadChanges: gitResult.hadChanges, message: gitResult.message });
             results.push(gitResult.message);
+            pushedCommitSha = gitResult.commitSha;
         } else {
             // Local-only mode: just stage and commit without pushing
             const { execFileSync } = await import("child_process");
@@ -160,6 +164,7 @@ async function executeReportProgress(
         try {
             const sendResult = await config.platformClient.sendReportProgress({
                 prDescription,
+                commitSha: pushedCommitSha,
             });
             if (sendResult.success) {
                 log("sent report_progress to platform");

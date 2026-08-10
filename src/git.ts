@@ -101,6 +101,12 @@ export interface CommitAndPushResult {
     hadChanges: boolean;
     /** Human-readable message describing the outcome */
     message: string;
+    /**
+     * SHA of the commit at HEAD after the push succeeded.
+     * Undefined if the SHA could not be resolved; a successful push is never
+     * reported as a failure just because this lookup did not work.
+     */
+    commitSha?: string;
 }
 
 // =============================================================================
@@ -301,12 +307,27 @@ export function commitAndPush(repoLocation: string, commitMessage: string): Comm
 
     pushWithRebaseFallback(repoLocation);
 
+    // Resolved only after the push succeeded, so the SHA always refers to a commit
+    // that is actually on the remote. Deliberately isolated in its own try/catch:
+    // a rev-parse failure must never turn an already-successful push into a
+    // reported error, which callers could retry into a duplicate commit.
+    let commitSha: string | undefined;
+    try {
+        commitSha = git(["rev-parse", "HEAD"], repoLocation).trim();
+    } catch (error) {
+        const msg = error instanceof Error ? error.message : String(error);
+        // Note: stderr, not stdout — commitAndPush runs inside the stdio MCP
+        // server (src/mcp-server.ts) where stdout is reserved for the MCP protocol.
+        console.error(`[Engine SDK] Push succeeded but resolving the commit SHA failed - ${msg}`);
+    }
+
     return {
         success: true,
         hadChanges,
         message: hadChanges
             ? `Committed and pushed: ${commitMessage}`
             : "No changes to commit. Pushed existing commits.",
+        commitSha,
     };
 }
 

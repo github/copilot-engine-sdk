@@ -291,8 +291,12 @@ export class PlatformClient {
     /**
      * Sends a report_progress event to update the PR title and/or description.
      * This triggers the platform to update the pull request associated with the job.
+     *
+     * `commitSha` is the SHA of the commit pushed alongside this update, when known.
+     * Omitted keys are left out of the payload entirely, so servers that do not
+     * understand a field are unaffected.
      */
-    async sendReportProgress(options: { prTitle?: string; prDescription?: string }): Promise<SendResult> {
+    async sendReportProgress(options: { prTitle?: string; prDescription?: string; commitSha?: string }): Promise<SendResult> {
         const url = new URL(`jobs/${this._jobId}/progress`, this.baseUrl);
         const contentObj: Record<string, string> = {};
         if (options.prTitle !== undefined) {
@@ -300,6 +304,9 @@ export class PlatformClient {
         }
         if (options.prDescription !== undefined) {
             contentObj.pr_description = options.prDescription;
+        }
+        if (options.commitSha !== undefined) {
+            contentObj.commit_sha = options.commitSha;
         }
         const payload: ProgressPayload = {
             namespace: this.namespace,
