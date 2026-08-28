@@ -306,20 +306,20 @@ function pushWithRebaseFallback(repoLocation: string): void {
 
     const branch = git(["rev-parse", "--abbrev-ref", "HEAD"], repoLocation).trim();
 
-    // Find the most recent commit we share with the remote before it moved.
-    // This is our own previous push (or the commit we cloned/branched from),
-    // so it is always a real ancestor of our local tip - regardless of what
-    // has since happened upstream. `@{upstream}` reflects the remote tip as
-    // of our last fetch/push, which is exactly the base our own commits were
-    // built on top of.
+    // Find the most recent commit we knew about on the remote before it
+    // moved. Use the remote-tracking ref directly rather than
+    // `<branch>@{upstream}`: the existing-checkout path uses `checkout -B`
+    // and may not configure branch tracking even though `origin/<branch>` is
+    // present. Never fall back to the repository root here; doing so would
+    // turn all historical commits into the "local diff" and defeat the
+    // purpose of this bounded reconciliation.
     let previousBase: string;
     try {
-        previousBase = git(["rev-parse", `${branch}@{upstream}`], repoLocation).trim();
+        previousBase = git(["rev-parse", `origin/${branch}`], repoLocation).trim();
     } catch (error) {
-        // No upstream is configured yet (e.g. first push attempt on a branch
-        // created locally without ever fetching). Fall back to the branch's
-        // own root - our full local history is then treated as "our diff".
-        previousBase = git(["rev-list", "--max-parents=0", "HEAD"], repoLocation).trim().split("\n")[0] ?? localTip;
+        throw new Error(
+            `Cannot reconcile a rejected push because the previous origin/${branch} tip is unavailable: ${gitErrorOutput(error)}`,
+        );
     }
 
     // Fetch only the target branch, matching the shallow depth used at clone
