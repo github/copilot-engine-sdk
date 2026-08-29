@@ -12,7 +12,9 @@
  */
 
 import { execFileSync } from "child_process";
-import { existsSync } from "fs";
+import { existsSync, writeFileSync, unlinkSync } from "fs";
+import { join } from "path";
+import { randomUUID } from "crypto";
 
 const DEFAULT_CLONE_DIR = "/tmp/workspace";
 
@@ -287,7 +289,7 @@ function pushWithRebaseFallback(repoLocation: string): void {
     // Capture our current tip before attempting the push. If the push is
     // rejected, this is the commit whose changes (relative to the previous
     // remote tip we forked from) need to be reapplied on top of the new one.
-    const localTip = git(["rev-parse", "HEAD"], repoLocation).trim();
+    const localTip = gitWithTimeout(["rev-parse", "HEAD"], repoLocation).trim();
 
     try {
         gitWithTimeout(["push", "--set-upstream", "origin", "HEAD"], repoLocation);
@@ -304,7 +306,7 @@ function pushWithRebaseFallback(repoLocation: string): void {
         );
     }
 
-    const branch = git(["rev-parse", "--abbrev-ref", "HEAD"], repoLocation).trim();
+    const branch = gitWithTimeout(["rev-parse", "--abbrev-ref", "HEAD"], repoLocation).trim();
 
     // Find the most recent commit we knew about on the remote before it
     // moved. Use the remote-tracking ref directly rather than
@@ -315,7 +317,7 @@ function pushWithRebaseFallback(repoLocation: string): void {
     // purpose of this bounded reconciliation.
     let previousBase: string;
     try {
-        previousBase = git(["rev-parse", `origin/${branch}`], repoLocation).trim();
+        previousBase = gitWithTimeout(["rev-parse", `origin/${branch}`], repoLocation).trim();
     } catch (error) {
         throw new Error(
             `Cannot reconcile a rejected push because the previous origin/${branch} tip is unavailable: ${gitErrorOutput(error)}`,
@@ -324,9 +326,14 @@ function pushWithRebaseFallback(repoLocation: string): void {
 
     // Fetch only the target branch, matching the shallow depth used at clone
     // time - we only need the new tip, not full history, to reapply on top
-    // of it.
-    gitWithTimeout(["fetch", "--depth", "2", "--no-tags", "origin", branch], repoLocation);
-    const newRemoteTip = git(["rev-parse", `origin/${branch}`], repoLocation).trim();
+    // of it. Explicitly fetch into the remote-tracking ref to ensure it's
+    // created, even for newly-created branches in shallow clones where
+    // remote.origin.fetch may only target the default branch initially.
+    gitWithTimeout(
+        ["fetch", "--depth", "2", "--no-tags", `+refs/heads/${branch}:refs/remotes/origin/${branch}`, "origin"],
+        repoLocation,
+    );
+    const newRemoteTip = gitWithTimeout(["rev-parse", `origin/${branch}`], repoLocation).trim();
 
     if (newRemoteTip === previousBase) {
         // The remote didn't actually move relative to what we forked from
@@ -341,65 +348,95 @@ function pushWithRebaseFallback(repoLocation: string): void {
     // single diff, rather than replaying each commit. We only need the net
     // content change to end up on the remote - the commit boundaries in
     // between are an implementation detail of how the agent got there.
-    const diff = git(["diff", "--binary", previousBase, localTip], repoLocation);
-
-    if (diff.trim().length === 0) {
-        // Our local commits net out to no content change (e.g. a revert).
-        // Nothing to reapply - just move our branch to the new remote tip.
-        git(["reset", "--hard", newRemoteTip], repoLocation);
-        gitWithTimeout(["push", "--set-upstream", "origin", "HEAD"], repoLocation);
-        return;
+    // Use a temp file to avoid exceeding execFileSync's 1 MiB buffer for
+    // large diffs in monorepos.
+    const diffPath = join("/tmp", `git-diff-${randomUUID()}.patch`);
+    try {
+        const diffOutput = execFileSync(
+            "git",
+            ["diff", "--binary", previousBase, localTip],
+            {
+                cwd: repoLocation,
+                encoding: "utf-8",
+                stdio: ["pipe", "pipe", "pipe"],
+                maxBuffer: undefined, // No buffer limit for captured output
+            },
+        );
+        writeFileSync(diffPath, diffOutput);
+    } catch (error) {
+        throw new Error(`Failed to generate diff for reapply: ${gitErrorOutput(error)}`);
     }
-
-    // Reset our branch onto the new remote tip, then reapply the diff as a
-    // single new commit. `reset --hard` (not checkout of a new branch) keeps
-    // us on the same branch ref throughout, so a crash between steps leaves
-    // the repo in an obviously-recoverable state rather than a detached
-    // reapply branch.
-    const priorTip = git(["rev-parse", "HEAD"], repoLocation).trim();
-    git(["reset", "--hard", newRemoteTip], repoLocation);
 
     try {
-        // `-3` enables a content-level three-way merge for hunks that don't
-        // apply cleanly line-for-line but don't truly conflict (using the
-        // blobs recorded in the diff itself, which are still present locally
-        // since we just produced this diff from our own history). Real
-        // content conflicts still fail loudly, the same as a rebase
-        // conflict would, and are reported without silently committing
-        // partial/garbled content.
-        execFileSync("git", ["apply", "-3", "--index"], {
-            cwd: repoLocation,
-            input: diff,
+        const diff = execFileSync("cat", [diffPath], {
+            encoding: "utf-8",
             stdio: ["pipe", "pipe", "pipe"],
-            timeout: GIT_SUBPROCESS_TIMEOUT_MS,
         });
-    } catch (applyError) {
-        // Best-effort cleanup: restore our prior local tip so a failed
-        // reconciliation doesn't leave the working tree on a bare remote
-        // checkout with unmerged/conflicted state.
-        try {
-            execFileSync("git", ["merge", "--abort"], { cwd: repoLocation, stdio: "pipe" });
-        } catch {
-            // no merge in progress; ignore
+
+        if (diff.trim().length === 0) {
+            // Our local commits net out to no content change (e.g. a revert).
+            // Nothing to reapply - just move our branch to the new remote tip.
+            gitWithTimeout(["reset", "--hard", newRemoteTip], repoLocation);
+            gitWithTimeout(["push", "--set-upstream", "origin", "HEAD"], repoLocation);
+            return;
         }
+
+        // Reset our branch onto the new remote tip, then reapply the diff as a
+        // single new commit. `reset --hard` (not checkout of a new branch) keeps
+        // us on the same branch ref throughout, so a crash between steps leaves
+        // the repo in an obviously-recoverable state rather than a detached
+        // reapply branch.
+        const priorTip = gitWithTimeout(["rev-parse", "HEAD"], repoLocation).trim();
+        gitWithTimeout(["reset", "--hard", newRemoteTip], repoLocation);
+
         try {
-            execFileSync("git", ["reset", "--hard", priorTip], { cwd: repoLocation, stdio: "pipe" });
-        } catch {
-            // best-effort cleanup
+            // `-3` enables a content-level three-way merge for hunks that don't
+            // apply cleanly line-for-line but don't truly conflict (using the
+            // blobs recorded in the diff itself, which are still present locally
+            // since we just produced this diff from our own history). Real
+            // content conflicts still fail loudly, the same as a rebase
+            // conflict would, and are reported without silently committing
+            // partial/garbled content.
+            execFileSync("git", ["apply", "-3", "--index", diffPath], {
+                cwd: repoLocation,
+                stdio: ["pipe", "pipe", "pipe"],
+                timeout: GIT_SUBPROCESS_TIMEOUT_MS,
+            });
+        } catch (applyError) {
+            // Best-effort cleanup: restore our prior local tip so a failed
+            // reconciliation doesn't leave the working tree on a bare remote
+            // checkout with unmerged/conflicted state.
+            try {
+                execFileSync("git", ["merge", "--abort"], { cwd: repoLocation, stdio: "pipe" });
+            } catch {
+                // no merge in progress; ignore
+            }
+            try {
+                execFileSync("git", ["reset", "--hard", priorTip], { cwd: repoLocation, stdio: "pipe", timeout: GIT_SUBPROCESS_TIMEOUT_MS });
+            } catch {
+                // best-effort cleanup
+            }
+            throw new Error(
+                `Failed to reapply local changes on top of the updated remote branch (likely a genuine content conflict): ${gitErrorOutput(applyError)}`,
+            );
         }
-        throw new Error(
-            `Failed to reapply local changes on top of the updated remote branch (likely a genuine content conflict): ${gitErrorOutput(applyError)}`,
-        );
+
+        // Recreate a single commit carrying our squashed changes. Using the
+        // original commit message set of the local tip keeps this understandable
+        // in history, at the cost of losing intermediate commit boundaries -
+        // an acceptable trade for a safety-net push.
+        const originalMessage = gitWithTimeout(["log", "-1", "--format=%B", localTip], repoLocation);
+        gitWithTimeout(["commit", "-m", originalMessage.trim() || "Reapply changes on updated remote branch"], repoLocation);
+
+        gitWithTimeout(["push", "--set-upstream", "origin", "HEAD"], repoLocation);
+    } finally {
+        // Clean up temp file
+        try {
+            unlinkSync(diffPath);
+        } catch {
+            // ignore cleanup errors
+        }
     }
-
-    // Recreate a single commit carrying our squashed changes. Using the
-    // original commit message set of the local tip keeps this understandable
-    // in history, at the cost of losing intermediate commit boundaries -
-    // an acceptable trade for a safety-net push.
-    const originalMessage = git(["log", "-1", "--format=%B", localTip], repoLocation);
-    git(["commit", "-m", originalMessage.trim() || "Reapply changes on updated remote branch"], repoLocation);
-
-    gitWithTimeout(["push", "--set-upstream", "origin", "HEAD"], repoLocation);
 }
 
 /**
