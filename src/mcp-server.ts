@@ -329,7 +329,7 @@ async function main(): Promise<void> {
 
     const config: EngineMcpServerConfig = {
         workingDir,
-        push: true,
+        push: process.env.COPILOT_AGENT_PUSH !== "false",
         platformClient,
     };
 

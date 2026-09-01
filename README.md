@@ -174,6 +174,8 @@ await startEngineMcpServer(server);
 node dist/mcp-server.js /path/to/working-directory
 ```
 
+Set `COPILOT_AGENT_PUSH=false` to commit changes locally without pushing them. Pushing remains enabled when the variable is unset.
+
 ### MCP Proxy Discovery
 
 Discover user-configured MCP servers passed to the engine via the platform.
