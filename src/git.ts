@@ -12,7 +12,9 @@
  */
 
 import { execFileSync } from "child_process";
-import { existsSync } from "fs";
+import { existsSync, writeFileSync, unlinkSync } from "fs";
+import { join } from "path";
+import { randomUUID } from "crypto";
 
 const DEFAULT_CLONE_DIR = "/tmp/workspace";
 
@@ -246,18 +248,51 @@ function isNonFastForwardError(output: string): boolean {
 }
 
 /**
+ * Timeout (ms) applied to every git subprocess spawned by the non-fast-forward
+ * fallback below. Repos are cloned shallowly (see `cloneRepo`'s `--depth 2`),
+ * so any of these operations should complete in seconds; a large value here
+ * only exists to fail fast instead of hanging silently until the caller's own
+ * (often much longer) timeout kills the process out from under us.
+ */
+const GIT_SUBPROCESS_TIMEOUT_MS = 60_000;
+
+/**
  * Pushes the current HEAD to origin. If the push is rejected because the remote
- * branch is ahead (non-fast-forward), fetches and rebases onto the remote tip,
- * then retries. Any other failure is rethrown with git's output preserved.
+ * branch is ahead (non-fast-forward), reconciles onto the new remote tip and
+ * retries. Any other failure is rethrown with git's output preserved.
+ *
+ * Reconciliation deliberately does NOT use `git rebase`. This SDK clones
+ * repositories shallowly (`--depth 2`, see `cloneRepo`), so the local branch
+ * frequently has no common ancestor with the fetched remote tip once the
+ * remote has advanced or been rewritten (e.g. squash-merge, force-push,
+ * branch protection workflows). Without a shared base, `git rebase` falls
+ * back to replaying every local commit individually via a full patch-id
+ * search and three-way merge, each invoking any configured hooks - which is
+ * slow, and unbounded, on a large repository, and gets worse linearly with
+ * the number of local commits being reapplied. This is a real hang we saw in
+ * production: safe pushes to a large monorepo stalled for tens of minutes
+ * with no further log output.
+ *
+ * Instead, we squash our own commits since the last known base into a single
+ * diff and apply that diff directly on top of the fetched remote tip. This
+ * is O(size of our diff), not O(number of local commits x remote history
+ * since diverging), and works correctly even when there is no common
+ * ancestor at all. Content-level conflicts (rather than ancestry conflicts)
+ * are still detected and rejected the same way `git rebase` would - we
+ * simply do not pay the cost of walking commit history to find them.
  *
  * The repository's local git hooks (e.g. pre-push) are intentionally left
- * enabled so we never silently bypass checks the repository owner configured.
- * The resilience here is the non-fast-forward rebase/retry below, not skipping
- * hooks.
+ * enabled so we never silently bypass checks the repository owner
+ * configured.
  */
 function pushWithRebaseFallback(repoLocation: string): void {
+    // Capture our current tip before attempting the push. If the push is
+    // rejected, this is the commit whose changes (relative to the previous
+    // remote tip we forked from) need to be reapplied on top of the new one.
+    const localTip = gitWithTimeout(["rev-parse", "HEAD"], repoLocation).trim();
+
     try {
-        git(["push", "--set-upstream", "origin", "HEAD"], repoLocation);
+        gitWithTimeout(["push", "--set-upstream", "origin", "HEAD"], repoLocation);
         return;
     } catch (error) {
         const output = error instanceof Error ? error.message : String(error);
@@ -266,24 +301,160 @@ function pushWithRebaseFallback(repoLocation: string): void {
         }
         // Note: stderr, not stdout — commitAndPush runs inside the stdio MCP
         // server (src/mcp-server.ts) where stdout is reserved for the MCP protocol.
-        console.error("[Engine SDK] Push rejected because the remote branch is ahead; fetching and rebasing...");
+        console.error(
+            "[Engine SDK] Push rejected because the remote branch is ahead; fetching and reapplying our changes on the new tip...",
+        );
     }
 
-    const branch = git(["rev-parse", "--abbrev-ref", "HEAD"], repoLocation).trim();
-    git(["fetch", "origin", branch], repoLocation);
+    const branch = gitWithTimeout(["rev-parse", "--abbrev-ref", "HEAD"], repoLocation).trim();
+
+    // Find the most recent commit we knew about on the remote before it
+    // moved. Use the remote-tracking ref directly rather than
+    // `<branch>@{upstream}`: the existing-checkout path uses `checkout -B`
+    // and may not configure branch tracking even though `origin/<branch>` is
+    // present. Never fall back to the repository root here; doing so would
+    // turn all historical commits into the "local diff" and defeat the
+    // purpose of this bounded reconciliation.
+    let previousBase: string;
+    try {
+        previousBase = gitWithTimeout(["rev-parse", `origin/${branch}`], repoLocation).trim();
+    } catch (error) {
+        throw new Error(
+            `Cannot reconcile a rejected push because the previous origin/${branch} tip is unavailable: ${gitErrorOutput(error)}`,
+        );
+    }
+
+    // Fetch only the target branch, matching the shallow depth used at clone
+    // time - we only need the new tip, not full history, to reapply on top
+    // of it. Explicitly fetch into the remote-tracking ref to ensure it's
+    // created, even for newly-created branches in shallow clones where
+    // remote.origin.fetch may only target the default branch initially.
+    gitWithTimeout(
+        ["fetch", "--depth", "2", "--no-tags", `+refs/heads/${branch}:refs/remotes/origin/${branch}`, "origin"],
+        repoLocation,
+    );
+    const newRemoteTip = gitWithTimeout(["rev-parse", `origin/${branch}`], repoLocation).trim();
+
+    if (newRemoteTip === previousBase) {
+        // The remote didn't actually move relative to what we forked from
+        // (e.g. a concurrent push landed and was since superseded, or this
+        // is a transient/duplicate rejection). Retrying the plain push is
+        // enough; no reconciliation is needed.
+        gitWithTimeout(["push", "--set-upstream", "origin", "HEAD"], repoLocation);
+        return;
+    }
+
+    // Squash everything we've done locally since `previousBase` into a
+    // single diff, rather than replaying each commit. We only need the net
+    // content change to end up on the remote - the commit boundaries in
+    // between are an implementation detail of how the agent got there.
+    // Use a temp file to avoid exceeding execFileSync's 1 MiB buffer for
+    // large diffs in monorepos.
+    const diffPath = join("/tmp", `git-diff-${randomUUID()}.patch`);
+    try {
+        const diffOutput = execFileSync(
+            "git",
+            ["diff", "--binary", previousBase, localTip],
+            {
+                cwd: repoLocation,
+                encoding: "utf-8",
+                stdio: ["pipe", "pipe", "pipe"],
+                maxBuffer: undefined, // No buffer limit for captured output
+            },
+        );
+        writeFileSync(diffPath, diffOutput);
+    } catch (error) {
+        throw new Error(`Failed to generate diff for reapply: ${gitErrorOutput(error)}`);
+    }
 
     try {
-        git(["rebase", `origin/${branch}`], repoLocation);
-    } catch (rebaseError) {
-        try {
-            execFileSync("git", ["rebase", "--abort"], { cwd: repoLocation, stdio: "pipe" });
-        } catch {
-            // best-effort cleanup
-        }
-        throw rebaseError;
-    }
+        const diff = execFileSync("cat", [diffPath], {
+            encoding: "utf-8",
+            stdio: ["pipe", "pipe", "pipe"],
+        });
 
-    git(["push", "--set-upstream", "origin", "HEAD"], repoLocation);
+        if (diff.trim().length === 0) {
+            // Our local commits net out to no content change (e.g. a revert).
+            // Nothing to reapply - just move our branch to the new remote tip.
+            gitWithTimeout(["reset", "--hard", newRemoteTip], repoLocation);
+            gitWithTimeout(["push", "--set-upstream", "origin", "HEAD"], repoLocation);
+            return;
+        }
+
+        // Reset our branch onto the new remote tip, then reapply the diff as a
+        // single new commit. `reset --hard` (not checkout of a new branch) keeps
+        // us on the same branch ref throughout, so a crash between steps leaves
+        // the repo in an obviously-recoverable state rather than a detached
+        // reapply branch.
+        const priorTip = gitWithTimeout(["rev-parse", "HEAD"], repoLocation).trim();
+        gitWithTimeout(["reset", "--hard", newRemoteTip], repoLocation);
+
+        try {
+            // `-3` enables a content-level three-way merge for hunks that don't
+            // apply cleanly line-for-line but don't truly conflict (using the
+            // blobs recorded in the diff itself, which are still present locally
+            // since we just produced this diff from our own history). Real
+            // content conflicts still fail loudly, the same as a rebase
+            // conflict would, and are reported without silently committing
+            // partial/garbled content.
+            execFileSync("git", ["apply", "-3", "--index", diffPath], {
+                cwd: repoLocation,
+                stdio: ["pipe", "pipe", "pipe"],
+                timeout: GIT_SUBPROCESS_TIMEOUT_MS,
+            });
+        } catch (applyError) {
+            // Best-effort cleanup: restore our prior local tip so a failed
+            // reconciliation doesn't leave the working tree on a bare remote
+            // checkout with unmerged/conflicted state.
+            try {
+                execFileSync("git", ["merge", "--abort"], { cwd: repoLocation, stdio: "pipe" });
+            } catch {
+                // no merge in progress; ignore
+            }
+            try {
+                execFileSync("git", ["reset", "--hard", priorTip], { cwd: repoLocation, stdio: "pipe", timeout: GIT_SUBPROCESS_TIMEOUT_MS });
+            } catch {
+                // best-effort cleanup
+            }
+            throw new Error(
+                `Failed to reapply local changes on top of the updated remote branch (likely a genuine content conflict): ${gitErrorOutput(applyError)}`,
+            );
+        }
+
+        // Recreate a single commit carrying our squashed changes. Using the
+        // original commit message set of the local tip keeps this understandable
+        // in history, at the cost of losing intermediate commit boundaries -
+        // an acceptable trade for a safety-net push.
+        const originalMessage = gitWithTimeout(["log", "-1", "--format=%B", localTip], repoLocation);
+        gitWithTimeout(["commit", "-m", originalMessage.trim() || "Reapply changes on updated remote branch"], repoLocation);
+
+        gitWithTimeout(["push", "--set-upstream", "origin", "HEAD"], repoLocation);
+    } finally {
+        // Clean up temp file
+        try {
+            unlinkSync(diffPath);
+        } catch {
+            // ignore cleanup errors
+        }
+    }
+}
+
+/**
+ * Runs a git subprocess with a bounded timeout so a stalled network call
+ * (e.g. a proxy hiccup) fails fast instead of hanging until an external
+ * watchdog (like a CI job timeout) tears things down from underneath it.
+ */
+function gitWithTimeout(args: string[], repoLocation: string): string {
+    try {
+        return execFileSync("git", args, {
+            cwd: repoLocation,
+            encoding: "utf-8",
+            stdio: ["pipe", "pipe", "pipe"],
+            timeout: GIT_SUBPROCESS_TIMEOUT_MS,
+        });
+    } catch (error) {
+        throw new Error(`git ${args.join(" ")} failed: ${gitErrorOutput(error)}`);
+    }
 }
 
 /**
