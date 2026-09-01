@@ -101,6 +101,7 @@ export type { PlatformClientConfig, ProgressPayload, ProgressRecord, ProgressRes
 
 export {
     createEngineMcpServer,
+    createEngineMcpServerAsync,
     startEngineMcpServer,
     REPORT_PROGRESS_TOOL_NAME,
     reportProgressToolDescription,
@@ -109,6 +110,7 @@ export {
 
 export type {
     EngineMcpServerConfig,
+    EngineMemoryConfig,
     ReportProgressInput,
 } from "./mcp-server.js";
 
