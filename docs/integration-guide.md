@@ -934,7 +934,9 @@ git push origin v1.0.0
 
 ### Release Workflow
 
-Add a workflow that triggers on version tags, builds your engine, and attaches the artifact to a GitHub Release.
+Add a workflow that triggers on version tags, builds your engine, and attaches the artifact to a GitHub Release. Because engines may include platform-specific binaries (e.g., native CLI tools or compiled extensions), releases should produce **per-platform artifacts** so the correct binary is available at runtime.
+
+Use a **matrix strategy** to build on each target platform and attach a separate tarball per combination (e.g., `engine-linux-x64.tar.gz`, `engine-darwin-arm64.tar.gz`).
 
 > **Note:** The example below is for a Node.js/TypeScript engine. If your engine uses a different runtime (Python, Go, Rust, etc.), substitute the appropriate setup, dependency installation, and build steps, and adjust the artifact paths to match your compiled output.
 
@@ -952,7 +954,27 @@ permissions:
 
 jobs:
   release:
-    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            platform: linux
+            arch: x64
+          - os: ubuntu-latest # Cross-build: uses TARGET_ARCH env var, not native arm64
+            platform: linux
+            arch: arm64
+          - os: macos-latest
+            platform: darwin
+            arch: arm64
+          - os: macos-13
+            platform: darwin
+            arch: x64
+          - os: windows-latest
+            platform: win32
+            arch: x64
+
+    runs-on: ${{ matrix.os }}
+
     steps:
       - uses: actions/checkout@v4
 
@@ -963,17 +985,25 @@ jobs:
 
       - run: npm ci
 
-      - run: npm run build
+      - name: Build
+        run: npm run build
+        env:
+          TARGET_PLATFORM: ${{ matrix.platform }}
+          TARGET_ARCH: ${{ matrix.arch }}
 
       - name: Create release tarball
-        run: tar -czf engine.tar.gz engine.yaml dist/
+        run: tar -czf engine-${{ matrix.platform }}-${{ matrix.arch }}.tar.gz engine.yaml dist/
 
-      - name: Create GitHub Release
+      - name: Upload release asset
         uses: softprops/action-gh-release@v2
         with:
-          files: engine.tar.gz
-          generate_release_notes: true
+          files: engine-${{ matrix.platform }}-${{ matrix.arch }}.tar.gz
+          generate_release_notes: ${{ matrix.platform == 'linux' && matrix.arch == 'x64' }}
 ```
+
+Each matrix job builds for its target platform (using `TARGET_PLATFORM` and `TARGET_ARCH` environment variables) and uploads a named tarball. The result is a single GitHub Release with one artifact per platform.
+
+> **Note:** This example uses cross-building — the `linux/arm64` job runs on an x64 runner and relies on `TARGET_ARCH` to select the correct platform-specific binaries at build time rather than compiling natively. This works well for engines that bundle pre-built binaries or use interpreted runtimes. If your engine includes native compilation steps (e.g., building C/C++ extensions or Rust crates for arm64), you will need either an actual arm64 runner or a QEMU/cross-toolchain emulation setup.
 
 ### What to Include in the Release
 
