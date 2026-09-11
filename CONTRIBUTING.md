@@ -31,6 +31,12 @@ npm run build
 cd cli && go build ./cmd/engine-cli
 ```
 
+Run the SDK's test suite:
+
+```bash
+npm test
+```
+
 If you change the SDK and use it from a linked local engine checkout, rebuild the SDK after your changes:
 
 ```bash

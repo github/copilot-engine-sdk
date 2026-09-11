@@ -124,6 +124,12 @@ export type { CloneRepoOptions, CommitAndPushResult } from "./git.js";
 // MCP Proxy Discovery
 // =============================================================================
 
-export { discoverMCPServers, isMCPProxyAvailable } from "./mcp-proxy.js";
+export { discoverMCPServers, discoverMCPServersDetailed, isMCPProxyAvailable } from "./mcp-proxy.js";
 
-export type { MCPServerEntry, DiscoveredMCPServer } from "./mcp-proxy.js";
+export type {
+    MCPServerEntry,
+    DiscoveredMCPServer,
+    MCPDiscoveryOptions,
+    MCPDiscoveryOutcome,
+    MCPProxyAvailabilityOptions,
+} from "./mcp-proxy.js";

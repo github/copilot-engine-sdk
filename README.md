@@ -181,12 +181,41 @@ Set `COPILOT_AGENT_PUSH=false` to commit changes locally without pushing them. P
 Discover user-configured MCP servers passed to the engine via the platform.
 
 ```typescript
-import { discoverMCPServers, isMCPProxyAvailable } from "@github/copilot-engine-sdk";
+import { discoverMCPServers } from "@github/copilot-engine-sdk";
 
-// Check if MCP proxy is available
-if (isMCPProxyAvailable()) {
-  const servers = discoverMCPServers();
-  // Returns discovered MCP servers the user has configured
+// Returns discovered MCP servers ready to pass to createSession's mcpServers
+// option, or {} if the proxy is unavailable, times out, or its response
+// couldn't be used.
+const servers = await discoverMCPServers(proxyUrl);
+```
+
+For callers that need to cancel discovery (for example, when the job that
+requested it is abandoned) or tell those outcomes apart, use
+`discoverMCPServersDetailed`. Its health check and server-list request share
+one overall time budget instead of each owning its own timeout, so the total
+wait is bounded rather than additive:
+
+```typescript
+import { discoverMCPServersDetailed } from "@github/copilot-engine-sdk";
+
+// Use the abort signal of whatever owns this work, such as the incoming
+// request or the job being processed.
+const controller = new AbortController();
+
+const outcome = await discoverMCPServersDetailed(proxyUrl, {
+  signal: controller.signal,
+  timeoutMs: 10_000, // overall deadline for both requests combined; default 10000
+});
+
+switch (outcome.status) {
+  case "ok":
+    // outcome.servers may be an empty object; that's still a successful result.
+    break;
+  case "unavailable":
+  case "timed-out":
+  case "cancelled":
+  case "invalid-response": // outcome.reason describes what was wrong with the response
+    break;
 }
 ```
 
