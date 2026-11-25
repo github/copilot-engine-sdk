@@ -12,6 +12,9 @@ on:
           - minor
           - major
         default: patch
+      receipt_version:
+        description: "Attach a CFS receipt to an existing release without republishing (optional)"
+        type: string
 
 permissions:
   contents: read
@@ -40,6 +43,7 @@ jobs:
   # defeating both the idempotent publish and the "same version everywhere"
   # invariant.
   version:
+    if: inputs.receipt_version == ''
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.next_version.outputs.version }}
@@ -315,3 +319,73 @@ jobs:
           fi
 
           gh release create "${RELEASE_ARGS[@]}" >> "$GITHUB_STEP_SUMMARY" 2>&1
+
+  cfs-receipt:
+    needs: [version, release]
+    if: >-
+      !cancelled() && github.repository == 'github/copilot-engine-sdk' && github.ref == 'refs/heads/main' &&
+      ((inputs.receipt_version != '' && needs.version.result == 'skipped' && needs.release.result == 'skipped') ||
+       (inputs.receipt_version == '' && needs.release.result == 'success'))
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    env:
+      VERSION: ${{ inputs.receipt_version || needs.version.outputs.version }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Verify the published tarball and write its receipt
+        id: receipt
+        run: |
+          set -euo pipefail
+          if [[ ! "$VERSION" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+            echo "::error::Expected an exact stable release version."
+            exit 1
+          fi
+          TAG="v${VERSION}"
+          TARBALL="github-copilot-engine-sdk-${VERSION}.tgz"
+          ASSET="cfs-quarantine-receipt-publish.yml.json"
+          WORK="$RUNNER_TEMP/cfs-receipt"
+          mkdir "$WORK"
+          gh release view "$TAG" --json isDraft,assets > "$WORK/release.json"
+          jq -e '.isDraft == false' "$WORK/release.json" > /dev/null
+          gh release download "$TAG" --pattern "$TARBALL" --dir "$WORK"
+          curl --fail --silent --show-error --retry 3 --max-time 30 \
+            "https://registry.npmjs.org/@github%2fcopilot-engine-sdk/${VERSION}" --output "$WORK/npm.json"
+          python3 script/cfs-quarantine-receipt.py "$VERSION" "$WORK/$TARBALL" "$WORK/npm.json" > "$WORK/receipt.json"
+          if jq -e --arg name "$ASSET" 'any(.assets[]; .name == $name)' "$WORK/release.json" > /dev/null; then
+            gh release download "$TAG" --pattern "$ASSET" --dir "$WORK"
+            jq -erj '.receipt' "$WORK/$ASSET" | cmp "$WORK/receipt.json" -
+            jq -e '.bundle' "$WORK/$ASSET" > "$WORK/bundle.json"
+            gh attestation verify "$WORK/receipt.json" --bundle "$WORK/bundle.json" \
+              --repo github/copilot-engine-sdk --source-ref refs/heads/main --deny-self-hosted-runners \
+              --cert-identity https://github.com/github/copilot-engine-sdk/.github/workflows/publish.yml@refs/heads/main \
+              --predicate-type https://github.com/github/cfs-at-github/quarantine-receipt/v1
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Sign the completed npm publish receipt
+        if: steps.receipt.outputs.exists != 'true'
+        id: attest
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: ${{ runner.temp }}/cfs-receipt/receipt.json
+          predicate-type: https://github.com/github/cfs-at-github/quarantine-receipt/v1
+          predicate: '{}'
+
+      - name: Attach the signed receipt to the existing release
+        if: steps.receipt.outputs.exists != 'true'
+        env:
+          BUNDLE_PATH: ${{ steps.attest.outputs.bundle-path }}
+        run: |
+          set -euo pipefail
+          WORK="$RUNNER_TEMP/cfs-receipt"
+          ASSET="$WORK/cfs-quarantine-receipt-publish.yml.json"
+          jq -n --rawfile receipt "$WORK/receipt.json" --slurpfile bundle "$BUNDLE_PATH" \
+            '{receipt: $receipt, bundle: $bundle[0]}' > "$ASSET"
+          gh release upload "v${VERSION}" "$ASSET"
